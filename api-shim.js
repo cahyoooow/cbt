@@ -1,6 +1,6 @@
 /* Adaptor google.script.run -> Apps Script Web App (JSON API).
    Ganti API_URL dengan URL deployment Web App Anda (berakhiran /exec). */
-window.CBT_API_URL = 'https://script.google.com/macros/s/AKfycbyr1IT8lcj62TZal0K_g2A04vyH6UMewCk26pEFnk4Dk4Kspdzx_O_cRX_DFVK73B-8/exec';
+window.CBT_API_URL = 'https://script.google.com/macros/s/AKfycbwCLsMHzKd_wqwLX-5w71sKtmubFHSxAgcr1Bdlcr-IESMcl21QBlKyBoI3L0df3a1X/exec';
 
 (function () {
   function call(fn, args, ok, fail) {
