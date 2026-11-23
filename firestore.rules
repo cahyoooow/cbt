@@ -1,0 +1,493 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===== Helper Primitives =====
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEmailDocId(id) {
+      return id is string && id.size() >= 3 && id.size() <= 160 && id.matches('^[^/\\s@]+@[^/\\s@]+\\.[^/\\s@]+$');
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admin_sessions/$(request.auth.uid)) ||
+        (
+          isVerifiedUser() && (
+            request.auth.token.email == 'cahyoooow@gmail.com' ||
+            exists(/databases/$(database)/documents/admins/$(request.auth.token.email))
+          )
+        )
+      );
+    }
+
+    // ===== Entity Validation Blueprints =====
+    function isValidAdminUser(d) {
+      return d.keys().hasAll(['email', 'nama', 'role', 'created_at']) &&
+        d.keys().hasOnly(['email', 'nama', 'role', 'created_at']) &&
+        d.email is string && d.email.size() >= 3 && d.email.size() <= 160 &&
+        d.nama is string && d.nama.size() >= 1 && d.nama.size() <= 120 &&
+        d.role in ['superadmin', 'admin'] &&
+        d.created_at is timestamp;
+    }
+
+    function isValidAdminConfigStatus(d) {
+      return d.keys().hasAll(['initialized', 'updated_at']) &&
+        d.keys().hasOnly(['initialized', 'updated_at']) &&
+        d.initialized is bool &&
+        d.updated_at is timestamp;
+    }
+
+    function isValidAdminConfigAuth(d) {
+      return d.keys().hasAll(['verifiers', 'updated_at']) &&
+        d.keys().hasOnly(['verifiers', 'updated_at']) &&
+        d.verifiers is list &&
+        d.verifiers.size() >= 1 &&
+        d.verifiers.size() <= 20 &&
+        d.verifiers[0] is string &&
+        d.updated_at is timestamp;
+    }
+
+    function isValidAdminPassLabel(d) {
+      return d.keys().hasAll(['label', 'verifier', 'created_at']) &&
+        d.keys().hasOnly(['label', 'verifier', 'created_at']) &&
+        d.label is string && d.label.size() >= 1 && d.label.size() <= 80 &&
+        d.verifier is string && d.verifier.size() >= 20 && d.verifier.size() <= 80 &&
+        d.created_at is timestamp;
+    }
+
+    function isValidAdminSession(d) {
+      return d.keys().hasAll(['uid', 'proof', 'created_at']) &&
+        d.keys().hasOnly(['uid', 'proof', 'created_at']) &&
+        d.uid is string && d.uid.size() >= 1 && d.uid.size() <= 128 &&
+        d.proof is string && d.proof.size() == 64 && d.proof.matches('^[a-f0-9]{64}$') &&
+        d.created_at is timestamp;
+    }
+
+    function isValidPengaturan(d) {
+      return d.keys().hasAll(['judul', 'subjudul', 'judul_admin', 'subjudul_admin', 'logo', 'updated_at']) &&
+        d.keys().hasOnly(['judul', 'subjudul', 'judul_admin', 'subjudul_admin', 'logo', 'updated_at']) &&
+        d.judul is string && d.judul.size() >= 1 && d.judul.size() <= 160 &&
+        d.subjudul is string && d.subjudul.size() <= 160 &&
+        d.judul_admin is string && d.judul_admin.size() <= 160 &&
+        d.subjudul_admin is string && d.subjudul_admin.size() <= 160 &&
+        d.logo is string && d.logo.size() <= 350000 &&
+        d.updated_at is timestamp;
+    }
+
+    function isValidTataTertib(d) {
+      return d.keys().hasAll(['no', 'teks', 'updated_at']) &&
+        d.keys().hasOnly(['no', 'teks', 'updated_at']) &&
+        d.no is int && d.no >= 1 && d.no <= 200 &&
+        d.teks is string && d.teks.size() >= 1 && d.teks.size() <= 500 &&
+        d.updated_at is timestamp;
+    }
+
+    function isValidPaket(d) {
+      return d.keys().hasAll([
+          'nama_paket_soal', 'mata_pelajaran', 'durasi_menit', 'status',
+          'token_paket_soal', 'waktu_mulai', 'waktu_berakhir',
+          'tampilkan_nilai', 'acak_soal', 'updated_at'
+        ]) &&
+        d.keys().hasOnly([
+          'nama_paket_soal', 'mata_pelajaran', 'durasi_menit', 'status',
+          'token_paket_soal', 'waktu_mulai', 'waktu_berakhir',
+          'tampilkan_nilai', 'acak_soal', 'updated_at'
+        ]) &&
+        d.nama_paket_soal is string && d.nama_paket_soal.size() >= 1 && d.nama_paket_soal.size() <= 160 &&
+        d.mata_pelajaran is string && d.mata_pelajaran.size() >= 1 && d.mata_pelajaran.size() <= 120 &&
+        d.durasi_menit is int && d.durasi_menit >= 1 && d.durasi_menit <= 600 &&
+        d.status in ['Aktif', 'Nonaktif'] &&
+        d.token_paket_soal is string && d.token_paket_soal.size() >= 3 && d.token_paket_soal.size() <= 32 &&
+        d.token_paket_soal.matches('^[A-Z0-9_\\-]+$') &&
+        d.waktu_mulai is string && d.waktu_mulai.size() <= 40 &&
+        d.waktu_berakhir is string && d.waktu_berakhir.size() <= 40 &&
+        d.tampilkan_nilai is bool &&
+        d.acak_soal is bool &&
+        d.updated_at is timestamp;
+    }
+
+    function isValidPaketToken(d) {
+      return d.keys().hasAll([
+          'paket_id', 'nama_paket_soal', 'mata_pelajaran', 'durasi_menit', 'status',
+          'token_paket_soal', 'waktu_mulai', 'waktu_berakhir',
+          'tampilkan_nilai', 'acak_soal', 'updated_at'
+        ]) &&
+        d.keys().hasOnly([
+          'paket_id', 'nama_paket_soal', 'mata_pelajaran', 'durasi_menit', 'status',
+          'token_paket_soal', 'waktu_mulai', 'waktu_berakhir',
+          'tampilkan_nilai', 'acak_soal', 'updated_at'
+        ]) &&
+        isValidId(d.paket_id) &&
+        d.nama_paket_soal is string && d.nama_paket_soal.size() >= 1 && d.nama_paket_soal.size() <= 160 &&
+        d.mata_pelajaran is string && d.mata_pelajaran.size() >= 1 && d.mata_pelajaran.size() <= 120 &&
+        d.durasi_menit is int && d.durasi_menit >= 1 && d.durasi_menit <= 600 &&
+        d.status in ['Aktif', 'Nonaktif'] &&
+        d.token_paket_soal is string && d.token_paket_soal.size() >= 3 && d.token_paket_soal.size() <= 32 &&
+        d.token_paket_soal.matches('^[A-Z0-9_\\-]+$') &&
+        d.waktu_mulai is string && d.waktu_mulai.size() <= 40 &&
+        d.waktu_berakhir is string && d.waktu_berakhir.size() <= 40 &&
+        d.tampilkan_nilai is bool &&
+        d.acak_soal is bool &&
+        d.updated_at is timestamp;
+    }
+
+    function isValidSoalPublik(d) {
+      return d.keys().hasAll([
+          'id_soal', 'paket_id', 'paket', 'nomor_soal', 'jenis_soal',
+          'teks_stimulus', 'gambar_stimulus_url', 'teks_soal', 'gambar_soal_url',
+          'pilihan_a', 'pilihan_b', 'pilihan_c', 'pilihan_d',
+          'bobot', 'aktif', 'updated_at'
+        ]) &&
+        d.keys().hasOnly([
+          'id_soal', 'paket_id', 'paket', 'nomor_soal', 'jenis_soal',
+          'teks_stimulus', 'gambar_stimulus_url', 'teks_soal', 'gambar_soal_url',
+          'pilihan_a', 'pilihan_b', 'pilihan_c', 'pilihan_d',
+          'bobot', 'aktif', 'updated_at',
+          'tka_mapel', 'tka_elemen', 'tka_subelemen', 'tka_indikator'
+        ]) &&
+        isValidId(d.id_soal) &&
+        isValidId(d.paket_id) &&
+        d.paket is string && d.paket.size() >= 1 && d.paket.size() <= 160 &&
+        d.nomor_soal is int && d.nomor_soal >= 1 && d.nomor_soal <= 1000 &&
+        d.jenis_soal is string && d.jenis_soal.size() >= 1 && d.jenis_soal.size() <= 80 &&
+        d.teks_stimulus is string && d.teks_stimulus.size() <= 15000 &&
+        d.gambar_stimulus_url is string && d.gambar_stimulus_url.size() <= 350000 &&
+        d.teks_soal is string && d.teks_soal.size() <= 15000 &&
+        d.gambar_soal_url is string && d.gambar_soal_url.size() <= 350000 &&
+        d.pilihan_a is string && d.pilihan_a.size() <= 100000 &&
+        d.pilihan_b is string && d.pilihan_b.size() <= 100000 &&
+        d.pilihan_c is string && d.pilihan_c.size() <= 100000 &&
+        d.pilihan_d is string && d.pilihan_d.size() <= 100000 &&
+        d.bobot is number && d.bobot >= 0 && d.bobot <= 1000 &&
+        d.aktif is bool &&
+        (!('tka_mapel' in d) || (d.tka_mapel is string && d.tka_mapel.size() <= 80)) &&
+        (!('tka_elemen' in d) || (d.tka_elemen is string && d.tka_elemen.size() <= 160)) &&
+        (!('tka_subelemen' in d) || (d.tka_subelemen is string && d.tka_subelemen.size() <= 200)) &&
+        (!('tka_indikator' in d) || (d.tka_indikator is string && d.tka_indikator.size() <= 300)) &&
+        d.updated_at is timestamp;
+    }
+
+    function isValidSoalKunci(d) {
+      return d.keys().hasAll([
+          'id_soal', 'paket_id', 'kunci_jawaban', 'pembahasan', 'bobot', 'rilis_kunci', 'updated_at'
+        ]) &&
+        d.keys().hasOnly([
+          'id_soal', 'paket_id', 'kunci_jawaban', 'pembahasan', 'bobot', 'rilis_kunci', 'updated_at'
+        ]) &&
+        isValidId(d.id_soal) &&
+        isValidId(d.paket_id) &&
+        d.kunci_jawaban is string && d.kunci_jawaban.size() <= 500 &&
+        d.pembahasan is string && d.pembahasan.size() <= 15000 &&
+        d.bobot is number && d.bobot >= 0 && d.bobot <= 1000 &&
+        d.rilis_kunci is bool &&
+        d.updated_at is timestamp;
+    }
+
+    function isValidSiswa(d) {
+      return d.keys().hasAll(['nama_siswa', 'nama_key', 'kelas', 'status_ujian', 'status_akun', 'updated_at']) &&
+        d.keys().hasOnly(['nama_siswa', 'nama_key', 'kelas', 'status_ujian', 'status_akun', 'updated_at']) &&
+        d.nama_siswa is string && d.nama_siswa.size() >= 1 && d.nama_siswa.size() <= 120 &&
+        d.nama_key is string && d.nama_key.size() >= 1 && d.nama_key.size() <= 120 &&
+        d.nama_key.matches('^[a-z0-9_]+$') &&
+        d.kelas is string && d.kelas.size() >= 1 && d.kelas.size() <= 40 &&
+        d.status_ujian is string && d.status_ujian.size() <= 200 &&
+        d.status_akun in ['Aktif', 'Nonaktif'] &&
+        d.updated_at is timestamp;
+    }
+
+    function isValidProgres(d) {
+      return d.keys().hasAll([
+          'paket_id', 'paket_nama', 'siswa_id', 'nama_siswa', 'kelas',
+          'jawaban', 'ragu', 'current_index', 'sisa_detik', 'pelanggaran', 'updated_at'
+        ]) &&
+        d.keys().hasOnly([
+          'paket_id', 'paket_nama', 'siswa_id', 'nama_siswa', 'kelas',
+          'jawaban', 'ragu', 'current_index', 'sisa_detik', 'pelanggaran', 'updated_at'
+        ]) &&
+        isValidId(d.paket_id) &&
+        d.paket_nama is string && d.paket_nama.size() >= 1 && d.paket_nama.size() <= 160 &&
+        isValidId(d.siswa_id) &&
+        d.nama_siswa is string && d.nama_siswa.size() >= 1 && d.nama_siswa.size() <= 120 &&
+        d.kelas is string && d.kelas.size() >= 1 && d.kelas.size() <= 40 &&
+        d.jawaban is map && d.jawaban.size() <= 300 &&
+        d.ragu is map && d.ragu.size() <= 300 &&
+        d.current_index is int && d.current_index >= 0 && d.current_index <= 1000 &&
+        d.sisa_detik is int && d.sisa_detik >= 0 && d.sisa_detik <= 86400 &&
+        d.pelanggaran is int && d.pelanggaran >= 0 && d.pelanggaran <= 1000 &&
+        d.updated_at is timestamp;
+    }
+
+    function isValidHasil(d) {
+      return d.keys().hasAll([
+          'paket_id', 'paket', 'siswa_id', 'nama_siswa', 'kelas',
+          'nilai_akhir', 'total_benar', 'total_salah', 'pelanggaran_tab',
+          'detail_jawaban', 'status_penilaian', 'created_at'
+        ]) &&
+        d.keys().hasOnly([
+          'paket_id', 'paket', 'siswa_id', 'nama_siswa', 'kelas',
+          'nilai_akhir', 'total_benar', 'total_salah', 'pelanggaran_tab',
+          'detail_jawaban', 'status_penilaian', 'created_at'
+        ]) &&
+        isValidId(d.paket_id) &&
+        d.paket is string && d.paket.size() >= 1 && d.paket.size() <= 160 &&
+        isValidId(d.siswa_id) &&
+        d.nama_siswa is string && d.nama_siswa.size() >= 1 && d.nama_siswa.size() <= 120 &&
+        d.kelas is string && d.kelas.size() >= 1 && d.kelas.size() <= 40 &&
+        d.nilai_akhir is number && d.nilai_akhir >= 0 && d.nilai_akhir <= 100 &&
+        d.total_benar is number && d.total_benar >= 0 && d.total_benar <= 100000 &&
+        d.total_salah is number && d.total_salah >= 0 && d.total_salah <= 100000 &&
+        d.pelanggaran_tab is int && d.pelanggaran_tab >= 0 && d.pelanggaran_tab <= 1000 &&
+        d.detail_jawaban is map && d.detail_jawaban.size() <= 300 &&
+        d.status_penilaian in ['dinilai', 'menunggu'] &&
+        d.created_at is timestamp;
+    }
+
+    function isValidPelanggaran(d) {
+      return d.keys().hasAll([
+          'siswa_id', 'nama_siswa', 'kelas', 'paket_id', 'paket_nama',
+          'jenis_pelanggaran', 'status_ujian', 'created_at'
+        ]) &&
+        d.keys().hasOnly([
+          'siswa_id', 'nama_siswa', 'kelas', 'paket_id', 'paket_nama',
+          'jenis_pelanggaran', 'status_ujian', 'created_at'
+        ]) &&
+        isValidId(d.siswa_id) &&
+        d.nama_siswa is string && d.nama_siswa.size() >= 1 && d.nama_siswa.size() <= 120 &&
+        d.kelas is string && d.kelas.size() >= 1 && d.kelas.size() <= 40 &&
+        d.paket_id is string && d.paket_id.size() <= 128 &&
+        d.paket_nama is string && d.paket_nama.size() <= 160 &&
+        d.jenis_pelanggaran is string && d.jenis_pelanggaran.size() >= 1 && d.jenis_pelanggaran.size() <= 160 &&
+        d.status_ujian is string && d.status_ujian.size() <= 200 &&
+        d.created_at is timestamp;
+    }
+
+    // ===== Collection Rules =====
+
+    match /admins/{adminEmail} {
+      allow get: if isAdmin() || (isVerifiedUser() && request.auth.token.email == adminEmail);
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidEmailDocId(adminEmail) && isValidAdminUser(incoming()) && incoming().email == adminEmail && incoming().created_at == request.time;
+      allow update: if isAdmin() && isValidEmailDocId(adminEmail) && isValidAdminUser(incoming()) && incoming().email == existing().email && incoming().created_at == existing().created_at;
+      allow delete: if isAdmin() && adminEmail != 'cahyoooow@gmail.com';
+    }
+
+    match /admin_config/status {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isSignedIn() &&
+        !exists(/databases/$(database)/documents/admin_config/status) &&
+        isValidAdminConfigStatus(incoming()) &&
+        incoming().initialized == true &&
+        incoming().updated_at == request.time &&
+        existsAfter(/databases/$(database)/documents/admin_config/auth);
+      allow update, delete: if false;
+    }
+
+    match /admin_config/auth {
+      allow get: if isAdmin();
+      allow list: if false;
+      allow create: if isSignedIn() &&
+        !exists(/databases/$(database)/documents/admin_config/status) &&
+        !exists(/databases/$(database)/documents/admin_config/auth) &&
+        isValidAdminConfigAuth(incoming()) &&
+        incoming().updated_at == request.time &&
+        existsAfter(/databases/$(database)/documents/admin_config/status);
+      allow update: if isAdmin() &&
+        isValidAdminConfigAuth(incoming()) &&
+        incoming().updated_at == request.time;
+      allow delete: if false;
+    }
+
+    match /admin_pass_labels/{passId} {
+      allow get, list: if isAdmin();
+      allow create: if isValidId(passId) &&
+        isValidAdminPassLabel(incoming()) &&
+        incoming().created_at == request.time && (
+          isAdmin() ||
+          (
+            isSignedIn() &&
+            !exists(/databases/$(database)/documents/admin_config/status) &&
+            existsAfter(/databases/$(database)/documents/admin_config/auth)
+          )
+        );
+      allow update: if isAdmin() && isValidId(passId) && isValidAdminPassLabel(incoming()) && incoming().created_at == existing().created_at;
+      allow delete: if isAdmin() && isValidId(passId);
+    }
+
+    match /admin_sessions/{sessionUid} {
+      allow get: if isSignedIn() && isValidId(sessionUid) && sessionUid == request.auth.uid;
+      allow list: if false;
+      allow create: if isSignedIn() &&
+        isValidId(sessionUid) &&
+        sessionUid == request.auth.uid &&
+        isValidAdminSession(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        incoming().created_at == request.time && (
+          (
+            exists(/databases/$(database)/documents/admin_config/auth) &&
+            hashing.sha256(incoming().proof.toUtf8()).toBase64() in get(/databases/$(database)/documents/admin_config/auth).data.verifiers
+          ) ||
+          (
+            !exists(/databases/$(database)/documents/admin_config/status) &&
+            !exists(/databases/$(database)/documents/admin_config/auth) &&
+            existsAfter(/databases/$(database)/documents/admin_config/auth) &&
+            hashing.sha256(incoming().proof.toUtf8()).toBase64() in getAfter(/databases/$(database)/documents/admin_config/auth).data.verifiers
+          )
+        );
+      allow update: if false;
+      allow delete: if isValidId(sessionUid) && isSignedIn() && (sessionUid == request.auth.uid || isAdmin());
+    }
+
+    match /pengaturan/{configId} {
+      allow get: if configId == 'global' || isAdmin();
+      allow list: if isAdmin();
+      allow create, update: if isAdmin() && isValidId(configId) && isValidPengaturan(incoming()) && incoming().updated_at == request.time;
+      allow delete: if false;
+    }
+
+    match /tata_tertib/{ruleId} {
+      allow get, list: if isAdmin() || resource.data.no >= 1;
+      allow create, update: if isAdmin() && isValidId(ruleId) && isValidTataTertib(incoming()) && incoming().updated_at == request.time;
+      allow delete: if isAdmin() && isValidId(ruleId);
+    }
+
+    match /paket/{paketId} {
+      allow get: if isAdmin() || (isValidId(paketId) && resource.data.status == 'Aktif');
+      allow list: if isAdmin();
+      allow create, update: if isAdmin() && isValidId(paketId) && isValidPaket(incoming()) && incoming().updated_at == request.time;
+      allow delete: if isAdmin() && isValidId(paketId);
+    }
+
+    match /paket_tokens/{token} {
+      allow get: if isAdmin() || isValidId(token);
+      allow list: if isAdmin();
+      allow create, update: if isAdmin() && isValidId(token) && isValidPaketToken(incoming()) && incoming().token_paket_soal == token && incoming().updated_at == request.time;
+      allow delete: if isAdmin() && isValidId(token);
+    }
+
+    match /soal/{soalId} {
+      allow get: if isAdmin() || (isValidId(soalId) && resource.data.aktif == true);
+      allow list: if isAdmin() || resource.data.aktif == true;
+      allow create, update: if isAdmin() && isValidId(soalId) && isValidSoalPublik(incoming()) && incoming().id_soal == soalId && incoming().updated_at == request.time;
+      allow delete: if isAdmin() && isValidId(soalId);
+    }
+
+    match /soal_kunci/{soalId} {
+      allow get: if isAdmin() || (isValidId(soalId) && resource.data.rilis_kunci == true);
+      allow list: if isAdmin() || resource.data.rilis_kunci == true;
+      allow create, update: if isAdmin() && isValidId(soalId) && isValidSoalKunci(incoming()) && incoming().id_soal == soalId && incoming().updated_at == request.time;
+      allow delete: if isAdmin() && isValidId(soalId);
+    }
+
+    match /siswa/{siswaId} {
+      allow get: if isAdmin() || isValidId(siswaId);
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(siswaId) && isValidSiswa(incoming()) && incoming().nama_key == siswaId && incoming().updated_at == request.time;
+      allow update: if isValidId(siswaId) && isValidSiswa(incoming()) && incoming().updated_at == request.time && (
+        isAdmin() ||
+        (
+          existing().status_akun == 'Aktif' &&
+          incoming().nama_siswa == existing().nama_siswa &&
+          incoming().nama_key == existing().nama_key &&
+          incoming().kelas == existing().kelas &&
+          incoming().status_akun == existing().status_akun &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status_ujian', 'updated_at'])
+        )
+      );
+      allow delete: if isAdmin() && isValidId(siswaId);
+    }
+
+    match /progres/{progresId} {
+      allow get: if isAdmin() || isValidId(progresId);
+      allow list: if isAdmin();
+      allow create: if isValidId(progresId) && isValidProgres(incoming()) &&
+        progresId == incoming().paket_id + '__' + incoming().siswa_id &&
+        incoming().updated_at == request.time && (
+          isAdmin() ||
+          (
+            exists(/databases/$(database)/documents/paket/$(incoming().paket_id)) &&
+            get(/databases/$(database)/documents/paket/$(incoming().paket_id)).data.status == 'Aktif' &&
+            exists(/databases/$(database)/documents/siswa/$(incoming().siswa_id)) &&
+            get(/databases/$(database)/documents/siswa/$(incoming().siswa_id)).data.status_akun == 'Aktif'
+          )
+        );
+      allow update: if isValidId(progresId) && isValidProgres(incoming()) && incoming().updated_at == request.time && (
+        isAdmin() ||
+        (
+          incoming().paket_id == existing().paket_id &&
+          incoming().paket_nama == existing().paket_nama &&
+          incoming().siswa_id == existing().siswa_id &&
+          incoming().nama_siswa == existing().nama_siswa &&
+          incoming().kelas == existing().kelas &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['jawaban', 'ragu', 'current_index', 'sisa_detik', 'pelanggaran', 'updated_at']) &&
+          exists(/databases/$(database)/documents/paket/$(incoming().paket_id)) &&
+          get(/databases/$(database)/documents/paket/$(incoming().paket_id)).data.status == 'Aktif'
+        )
+      );
+      allow delete: if isValidId(progresId) && (
+        isAdmin() ||
+        existsAfter(/databases/$(database)/documents/hasil/$(progresId))
+      );
+    }
+
+    match /hasil/{hasilId} {
+      allow get: if isAdmin() || isValidId(hasilId);
+      allow list: if isAdmin();
+      allow create: if isValidId(hasilId) && isValidHasil(incoming()) &&
+        hasilId == incoming().paket_id + '__' + incoming().siswa_id &&
+        incoming().created_at == request.time && (
+          isAdmin() ||
+          (
+            exists(/databases/$(database)/documents/paket/$(incoming().paket_id)) &&
+            get(/databases/$(database)/documents/paket/$(incoming().paket_id)).data.status == 'Aktif' &&
+            exists(/databases/$(database)/documents/siswa/$(incoming().siswa_id)) &&
+            get(/databases/$(database)/documents/siswa/$(incoming().siswa_id)).data.status_akun == 'Aktif'
+          )
+        );
+      allow update: if isAdmin() && isValidId(hasilId) && isValidHasil(incoming()) && incoming().created_at == existing().created_at;
+      allow delete: if isAdmin() && isValidId(hasilId);
+    }
+
+    match /pelanggaran/{logId} {
+      allow get, list: if isAdmin();
+      allow create: if isValidId(logId) && isValidPelanggaran(incoming()) && (
+        isAdmin() ||
+        (
+          incoming().created_at == request.time &&
+          exists(/databases/$(database)/documents/siswa/$(incoming().siswa_id))
+        )
+      );
+      allow update: if isAdmin() && isValidId(logId) && isValidPelanggaran(incoming()) &&
+        incoming().created_at == existing().created_at;
+      allow delete: if isAdmin() && isValidId(logId);
+    }
+
+    // Connection validation probe
+    match /test/connection {
+      allow get: if true;
+    }
+  }
+}

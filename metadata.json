@@ -1,0 +1,6 @@
+{
+  "name": "CBT - SD Negeri 5 Wonosobo",
+  "description": "Aplikasi Computer Based Test (CBT) berbasis Firebase Firestore untuk SD Negeri 5 Wonosobo dengan dukungan soal AKM/PGK, pantau real-time, dan analisis butir soal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

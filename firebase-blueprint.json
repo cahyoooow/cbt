@@ -1,0 +1,393 @@
+{
+  "entities": {
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Akun guru atau administrator CBT yang diizinkan mengelola ujian.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160,
+          "description": "Email Google terverifikasi milik admin/guru."
+        },
+        "nama": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Nama tampilan admin/guru."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["superadmin", "admin"],
+          "description": "Tingkat akses administrator."
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "nama", "role", "created_at"]
+    },
+    "AdminConfigStatus": {
+      "title": "AdminConfigStatus",
+      "description": "Status inisialisasi password admin CBT.",
+      "type": "object",
+      "properties": {
+        "initialized": { "type": "boolean" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["initialized", "updated_at"]
+    },
+    "AdminConfigAuth": {
+      "title": "AdminConfigAuth",
+      "description": "Daftar verifier hash password admin yang hanya dapat dibaca oleh admin terautentikasi.",
+      "type": "object",
+      "properties": {
+        "verifiers": { "type": "array" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["verifiers", "updated_at"]
+    },
+    "AdminPassLabel": {
+      "title": "AdminPassLabel",
+      "description": "Label deskriptif untuk setiap slot password admin tanpa menyimpan password asli.",
+      "type": "object",
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "verifier": { "type": "string", "minLength": 20, "maxLength": 80 },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["label", "verifier", "created_at"]
+    },
+    "AdminSession": {
+      "title": "AdminSession",
+      "description": "Sesi admin aktif berbasis verifikasi password pada Firestore rules.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "proof": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "proof", "created_at"]
+    },
+    "Pengaturan": {
+      "title": "Pengaturan",
+      "description": "Konfigurasi tampilan portal CBT sekolah.",
+      "type": "object",
+      "properties": {
+        "judul": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "subjudul": { "type": "string", "maxLength": 160 },
+        "judul_admin": { "type": "string", "maxLength": 160 },
+        "subjudul_admin": { "type": "string", "maxLength": 160 },
+        "logo": { "type": "string", "maxLength": 350000 },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["judul", "subjudul", "judul_admin", "subjudul_admin", "logo", "updated_at"]
+    },
+    "TataTertib": {
+      "title": "TataTertib",
+      "description": "Butir tata tertib ujian yang ditampilkan sebelum siswa mulai mengerjakan.",
+      "type": "object",
+      "properties": {
+        "no": { "type": "integer" },
+        "teks": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["no", "teks", "updated_at"]
+    },
+    "PaketUjian": {
+      "title": "PaketUjian",
+      "description": "Paket ujian beserta jadwal, durasi, status, dan token masuk siswa.",
+      "type": "object",
+      "properties": {
+        "nama_paket_soal": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "mata_pelajaran": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "durasi_menit": { "type": "integer" },
+        "status": { "type": "string", "enum": ["Aktif", "Nonaktif"] },
+        "token_paket_soal": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 32,
+          "pattern": "^[A-Z0-9_-]+$"
+        },
+        "waktu_mulai": { "type": "string", "maxLength": 40 },
+        "waktu_berakhir": { "type": "string", "maxLength": 40 },
+        "tampilkan_nilai": { "type": "boolean" },
+        "acak_soal": { "type": "boolean" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "nama_paket_soal",
+        "mata_pelajaran",
+        "durasi_menit",
+        "status",
+        "token_paket_soal",
+        "waktu_mulai",
+        "waktu_berakhir",
+        "tampilkan_nilai",
+        "acak_soal",
+        "updated_at"
+      ]
+    },
+    "PaketTokenLookup": {
+      "title": "PaketTokenLookup",
+      "description": "Indeks pencarian paket ujian berdasarkan token agar siswa tidak perlu membaca daftar semua paket.",
+      "type": "object",
+      "properties": {
+        "paket_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$" },
+        "nama_paket_soal": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "mata_pelajaran": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "durasi_menit": { "type": "integer" },
+        "status": { "type": "string", "enum": ["Aktif", "Nonaktif"] },
+        "token_paket_soal": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Z0-9_-]+$" },
+        "waktu_mulai": { "type": "string", "maxLength": 40 },
+        "waktu_berakhir": { "type": "string", "maxLength": 40 },
+        "tampilkan_nilai": { "type": "boolean" },
+        "acak_soal": { "type": "boolean" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "paket_id",
+        "nama_paket_soal",
+        "mata_pelajaran",
+        "durasi_menit",
+        "status",
+        "token_paket_soal",
+        "waktu_mulai",
+        "waktu_berakhir",
+        "tampilkan_nilai",
+        "acak_soal",
+        "updated_at"
+      ]
+    },
+    "SoalPublik": {
+      "title": "SoalPublik",
+      "description": "Konten soal ujian tanpa kunci jawaban dan pembahasan agar aman dibaca siswa saat ujian.",
+      "type": "object",
+      "properties": {
+        "id_soal": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$" },
+        "paket_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$" },
+        "paket": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "nomor_soal": { "type": "integer" },
+        "jenis_soal": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "teks_stimulus": { "type": "string", "maxLength": 15000 },
+        "gambar_stimulus_url": { "type": "string", "maxLength": 350000 },
+        "teks_soal": { "type": "string", "maxLength": 15000 },
+        "gambar_soal_url": { "type": "string", "maxLength": 350000 },
+        "pilihan_a": { "type": "string", "maxLength": 100000 },
+        "pilihan_b": { "type": "string", "maxLength": 100000 },
+        "pilihan_c": { "type": "string", "maxLength": 100000 },
+        "pilihan_d": { "type": "string", "maxLength": 100000 },
+        "bobot": { "type": "number" },
+        "aktif": { "type": "boolean" },
+        "tka_mapel": { "type": "string", "maxLength": 80 },
+        "tka_elemen": { "type": "string", "maxLength": 160 },
+        "tka_subelemen": { "type": "string", "maxLength": 200 },
+        "tka_indikator": { "type": "string", "maxLength": 300 },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id_soal",
+        "paket_id",
+        "paket",
+        "nomor_soal",
+        "jenis_soal",
+        "teks_stimulus",
+        "gambar_stimulus_url",
+        "teks_soal",
+        "gambar_soal_url",
+        "pilihan_a",
+        "pilihan_b",
+        "pilihan_c",
+        "pilihan_d",
+        "bobot",
+        "aktif",
+        "updated_at"
+      ]
+    },
+    "SoalKunci": {
+      "title": "SoalKunci",
+      "description": "Kunci jawaban dan pembahasan soal, terpisah dari konten soal publik.",
+      "type": "object",
+      "properties": {
+        "id_soal": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$" },
+        "paket_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$" },
+        "kunci_jawaban": { "type": "string", "maxLength": 500 },
+        "pembahasan": { "type": "string", "maxLength": 15000 },
+        "bobot": { "type": "number" },
+        "rilis_kunci": { "type": "boolean" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id_soal",
+        "paket_id",
+        "kunci_jawaban",
+        "pembahasan",
+        "bobot",
+        "rilis_kunci",
+        "updated_at"
+      ]
+    },
+    "Siswa": {
+      "title": "Siswa",
+      "description": "Data master peserta ujian CBT.",
+      "type": "object",
+      "properties": {
+        "nama_siswa": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "nama_key": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "^[a-z0-9_]+$" },
+        "kelas": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "status_ujian": { "type": "string", "maxLength": 200 },
+        "status_akun": { "type": "string", "enum": ["Aktif", "Nonaktif"] },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["nama_siswa", "nama_key", "kelas", "status_ujian", "status_akun", "updated_at"]
+    },
+    "ProgresUjian": {
+      "title": "ProgresUjian",
+      "description": "Progres real-time jawaban siswa, tanda ragu-ragu, dan sisa detik.",
+      "type": "object",
+      "properties": {
+        "paket_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$" },
+        "paket_nama": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "siswa_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$" },
+        "nama_siswa": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "kelas": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "jawaban": { "type": "object" },
+        "ragu": { "type": "object" },
+        "current_index": { "type": "integer" },
+        "sisa_detik": { "type": "integer" },
+        "pelanggaran": { "type": "integer" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "paket_id",
+        "paket_nama",
+        "siswa_id",
+        "nama_siswa",
+        "kelas",
+        "jawaban",
+        "ragu",
+        "current_index",
+        "sisa_detik",
+        "pelanggaran",
+        "updated_at"
+      ]
+    },
+    "HasilUjian": {
+      "title": "HasilUjian",
+      "description": "Rekap nilai akhir dan detail jawaban siswa yang bersifat final per paket.",
+      "type": "object",
+      "properties": {
+        "paket_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$" },
+        "paket": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "siswa_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$" },
+        "nama_siswa": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "kelas": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "nilai_akhir": { "type": "number" },
+        "total_benar": { "type": "number" },
+        "total_salah": { "type": "number" },
+        "pelanggaran_tab": { "type": "integer" },
+        "detail_jawaban": { "type": "object" },
+        "status_penilaian": { "type": "string", "enum": ["dinilai", "menunggu"] },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "paket_id",
+        "paket",
+        "siswa_id",
+        "nama_siswa",
+        "kelas",
+        "nilai_akhir",
+        "total_benar",
+        "total_salah",
+        "pelanggaran_tab",
+        "detail_jawaban",
+        "status_penilaian",
+        "created_at"
+      ]
+    },
+    "LogPelanggaran": {
+      "title": "LogPelanggaran",
+      "description": "Catatan pelanggaran pindah tab/window selama ujian.",
+      "type": "object",
+      "properties": {
+        "siswa_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$" },
+        "nama_siswa": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "kelas": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "paket_id": { "type": "string", "maxLength": 128 },
+        "paket_nama": { "type": "string", "maxLength": 160 },
+        "jenis_pelanggaran": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "status_ujian": { "type": "string", "maxLength": 200 },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "siswa_id",
+        "nama_siswa",
+        "kelas",
+        "paket_id",
+        "paket_nama",
+        "jenis_pelanggaran",
+        "status_ujian",
+        "created_at"
+      ]
+    }
+  },
+  "firestore": {
+    "/admins/{adminEmail}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Daftar email admin/guru yang memiliki akses penuh."
+    },
+    "/admin_config/{docId}": {
+      "schema": { "$ref": "#/entities/AdminConfigAuth" },
+      "description": "Konfigurasi status dan hash verifier password admin."
+    },
+    "/admin_pass_labels/{passId}": {
+      "schema": { "$ref": "#/entities/AdminPassLabel" },
+      "description": "Daftar label slot password admin."
+    },
+    "/admin_sessions/{sessionUid}": {
+      "schema": { "$ref": "#/entities/AdminSession" },
+      "description": "Sesi admin terverifikasi password."
+    },
+    "/pengaturan/{configId}": {
+      "schema": { "$ref": "#/entities/Pengaturan" },
+      "description": "Pengaturan global aplikasi CBT (dokumen global)."
+    },
+    "/tata_tertib/{ruleId}": {
+      "schema": { "$ref": "#/entities/TataTertib" },
+      "description": "Daftar tata tertib ujian."
+    },
+    "/paket/{paketId}": {
+      "schema": { "$ref": "#/entities/PaketUjian" },
+      "description": "Daftar paket soal ujian yang dikelola admin."
+    },
+    "/paket_tokens/{token}": {
+      "schema": { "$ref": "#/entities/PaketTokenLookup" },
+      "description": "Indeks lookup token ujian untuk siswa (get-only)."
+    },
+    "/soal/{soalId}": {
+      "schema": { "$ref": "#/entities/SoalPublik" },
+      "description": "Butir soal ujian tanpa kunci jawaban dan pembahasan."
+    },
+    "/soal_kunci/{soalId}": {
+      "schema": { "$ref": "#/entities/SoalKunci" },
+      "description": "Kunci jawaban dan pembahasan terpisah dari soal publik."
+    },
+    "/siswa/{siswaId}": {
+      "schema": { "$ref": "#/entities/Siswa" },
+      "description": "Master data peserta ujian."
+    },
+    "/progres/{progresId}": {
+      "schema": { "$ref": "#/entities/ProgresUjian" },
+      "description": "Progres sementara jawaban dan sisa detik siswa."
+    },
+    "/hasil/{hasilId}": {
+      "schema": { "$ref": "#/entities/HasilUjian" },
+      "description": "Rekap hasil ujian final per siswa dan paket."
+    },
+    "/pelanggaran/{logId}": {
+      "schema": { "$ref": "#/entities/LogPelanggaran" },
+      "description": "Log pelanggaran siswa selama ujian."
+    }
+  }
+}
