@@ -1,0 +1,596 @@
+const JUDUL = 'CBT - SD Negeri 5 Wonosobo';
+const N = {soal:'Master_Soal',siswa:'Master_Siswa',hasil:'Hasil_Ujian',paket:'Paket Soal',log:'Log Pelanggaran',tib:'Tata Tertib',adm:'Akun Admin',set:'Pengaturan',prog:'Progres Ujian'};
+const H = {
+ soal:['ID_Soal','Paket','Nomor_Soal','Jenis_Soal','Teks_Stimulus','Gambar_Stimulus_URL','Teks_Soal','Gambar_Soal_URL','Pilihan_A','Pilihan_B','Pilihan_C','Pilihan_D','Kunci_Jawaban','Pembahasan','Bobot'],
+ siswa:['Nama_Siswa','Kelas','Status_Ujian','Status_Akun'],
+ hasil:['Timestamp','Nama_Siswa','Kelas','Nilai_Akhir','Total_Benar','Total_Salah','Pelanggaran_Tab','Detail_Jawaban_JSON','Paket'],
+ paket:['Nama_Paket_Soal','Mata_Pelajaran','Durasi_(Menit)','Status','Token_Paket_Soal','Waktu_Mulai','Waktu_Berakhir'],
+ log:['Timestamp','Nama_Siswa','Kelas','Jenis_Pelanggaran','Waktu_Kejadian','Status_Ujian'],
+ tib:['No','Tata_Tertib'],
+ adm:['Password'],
+ prog:['Nama_Siswa','Paket','Jawaban_JSON','Sisa_Detik','Update_Terakhir','Pelanggaran']
+};
+const TZ = Session.getScriptTimeZone();
+
+// ===== Cache & performa (agar kuat untuk ±90 siswa serentak) =====
+// Data yang jarang berubah (siswa, paket, soal, pengaturan) disimpan di CacheService.
+// Setiap perubahan lewat menu admin menaikkan "versi" cache (cbump) sehingga data lama otomatis tidak dipakai.
+const CC = () => CacheService.getScriptCache();
+function ver() { const c = CC(); let v = c.get('ver'); if (!v) { v = String(Date.now()); c.put('ver', v, 21600); } return v; }
+function cbump() { CC().put('ver', String(Date.now()) + Math.floor(Math.random() * 1000), 21600); }
+// Nilai besar dipecah per 32.000 karakter (batas CacheService 100KB per entri)
+function cput(key, obj, ttl) {
+  try {
+    const s = JSON.stringify(obj), n = Math.ceil(s.length / 32000) || 1, m = {};
+    for (let i = 0; i < n; i++) m[key + '#' + i] = s.slice(i * 32000, (i + 1) * 32000);
+    m[key + '#n'] = String(n);
+    CC().putAll(m, ttl);
+  } catch (e) {}
+}
+function cget(key) {
+  try {
+    const c = CC(), n = Number(c.get(key + '#n'));
+    if (!n) return null;
+    const ks = []; for (let i = 0; i < n; i++) ks.push(key + '#' + i);
+    const m = c.getAll(ks); let s = '';
+    for (let i = 0; i < n; i++) { if (m[ks[i]] == null) return null; s += m[ks[i]]; }
+    return JSON.parse(s);
+  } catch (e) { return null; }
+}
+function memo(key, ttl, fn) { const k = key + '@' + ver(); let v = cget(k); if (v === null) { v = fn(); cput(k, v, ttl); } return v; }
+const rowsC = k => memo('rows:' + k, 60, () => rows(k));
+const cfgC = () => memo('cfg', 120, cfg);
+
+// ===== API JSON untuk frontend di GitHub Pages =====
+// Frontend (index.html di GitHub) memanggil fungsi di bawah lewat fetch POST {fn, args}.
+// Hanya fungsi pada daftar ini yang boleh dipanggil dari luar.
+const API = {verifyAdminLogin, verifyStudentLogin, getQuestionsForStudent, saveProgress, logViolation, submitStudentExam, admin, uploadImage, getImg, getSettings};
+
+function doGet(e) {
+ // ?api=1 -> cek status API; selain itu tampilkan aplikasi (Index.html) seperti semula
+ if (e && e.parameter && e.parameter.api) return ContentService.createTextOutput(JSON.stringify({ok:true, msg:'CBT API aktif'})).setMimeType(ContentService.MimeType.JSON);
+ return HtmlService.createHtmlOutputFromFile('Index').setTitle(cfgC().judul)
+   .addMetaTag('viewport', 'width=device-width, initial-scale=1')
+   .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function doPost(e) {
+ let out;
+ try {
+   const req = JSON.parse(e.postData.contents), f = Object.prototype.hasOwnProperty.call(API, req.fn) ? API[req.fn] : null;
+   if (!f) throw new Error('Fungsi tidak diizinkan: ' + req.fn);
+   const d = f.apply(null, req.args || []);
+   out = {ok:true, data: d === undefined ? null : d};
+ } catch (err) {
+   out = {ok:false, error: String(err && err.message || err)};
+ }
+ return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function setupDatabase() {
+ const ss = SpreadsheetApp.getActive();
+ const ph = t => 'https:\/\/placehold.co/600x260?text=' + encodeURIComponent(t);
+ const D = {
+   soal: [
+     ['S1','Matematika Kelas 6',1,'PG','Bu Ani membeli 3 kg apel seharga Rp25.000 per kg dan 2 kg jeruk seharga Rp20.000 per kg di pasar.',ph('Apel dan Jeruk'),'Berapa total uang yang harus dibayar Bu Ani?','','Rp95.000','Rp105.000','Rp115.000','Rp125.000','C','Apel: 3 x 25.000 = 75.000. Jeruk: 2 x 20.000 = 40.000. Total = 115.000.',10],
+     ['S2','Matematika Kelas 6',2,'PGK MCMA','Perhatikan deretan bilangan berikut: 12, 15, 18, 21, 25.',ph('Deret Bilangan'),'Pilih SEMUA bilangan yang merupakan kelipatan 3.','','12','15','21','25','A,B,C','12, 15, dan 21 habis dibagi 3, sedangkan 25 tidak.',10],
+     ['S3','Matematika Kelas 6',3,'PGK Kategori:Benar/Salah','Kebun Pak Budi berbentuk persegi panjang dengan panjang 20 m dan lebar 15 m.',ph('Kebun Pak Budi'),'Tentukan pernyataan berikut Benar atau Salah.','','Luas kebun adalah 300 m2','Keliling kebun adalah 70 m','Luas kebun adalah 350 m2','Lebar kebun lebih panjang daripada panjangnya','Benar,Benar,Salah,Salah','Luas = 20 x 15 = 300 m2. Keliling = 2 x (20+15) = 70 m. Lebar (15) lebih pendek dari panjang (20).',10]
+   ],
+   siswa: [['Andi Saputra','6A','Belum','Aktif'],['Siti Rahma','6A','Belum','Aktif'],['Budi Santoso','6B','Belum','Aktif']],
+   paket: [
+     ['Matematika Kelas 6','Matematika',60,'Aktif','MTK123','2026-01-01 00:00:00','2030-12-31 23:59:00'],
+     ['IPA Kelas 6','IPA',45,'Aktif','IPA123','2026-01-01 00:00:00','2030-12-31 23:59:00'],
+     ['Bahasa Indonesia Kelas 6','Bahasa Indonesia',60,'Nonaktif','BIN123','2026-01-01 00:00:00','2030-12-31 23:59:00']
+   ],
+   tib: [[1,'Berdoa sebelum mengerjakan soal.'],[2,'Kerjakan soal dengan jujur dan mandiri.'],[3,'Dilarang membuka tab atau aplikasi lain selama ujian.'],[4,'Dilarang menyalin, menempel, dan klik kanan.'],[5,'Pelanggaran tercatat otomatis dan dilaporkan ke guru.'],[6,'Ujian terkirim otomatis saat waktu habis.']],
+   adm: [['123']]
+ };
+ Object.keys(H).forEach(k => {
+   const s = ss.getSheetByName(N[k]) || ss.insertSheet(N[k]);
+   s.clear();
+   const d = [H[k]].concat(D[k] || []);
+   s.getRange(1, 1, d.length, H[k].length).setValues(d);
+   s.getRange(1, 1, 1, H[k].length).setFontWeight('bold').setBackground('#dbeafe');
+   s.setFrozenRows(1);
+ });
+ const d = ss.getSheetByName('Sheet1') || ss.getSheetByName('Sheet 1');
+ if (d && d.getLastRow() === 0) ss.deleteSheet(d);
+ cfg();
+ cbump();
+}
+
+const sh = k => {
+ let s = SpreadsheetApp.getActive().getSheetByName(N[k]);
+ if (!s && k === 'prog') { // sheet progres dibuat otomatis (tidak perlu setupDatabase ulang)
+   s = SpreadsheetApp.getActive().insertSheet(N.prog);
+   s.getRange(1, 1, 1, H.prog.length).setValues([H.prog]).setFontWeight('bold').setBackground('#dbeafe');
+   s.setFrozenRows(1);
+ }
+ if (!s) throw new Error('Sheet "' + N[k] + '" belum ada. Jalankan fungsi setupDatabase() dulu.');
+ return s;
+};
+const nz = s => String(s == null ? '' : s).toLowerCase().replace(/\s/g, '');
+const pn = s => String(s == null ? '' : s).trim().toLowerCase();
+
+function rows(k) {
+ const v = sh(k).getDataRange().getValues();
+ if (v.length < 2) return [];
+ const h = v[0];
+ return v.slice(1).map((r, i) => {
+   const o = {_row: i + 2};
+   h.forEach((c, j) => o[c] = r[j] instanceof Date ? Utilities.formatDate(r[j], TZ, 'yyyy-MM-dd HH:mm:ss') : r[j]);
+   return o;
+ }).filter(o => k === 'soal' ? (String(o.ID_Soal).trim() !== '' || String(o.Teks_Soal).trim() !== '') : String(o[h[0]]).trim() !== '')
+   .map(o => { if (k === 'soal' && String(o.ID_Soal).trim() === '') o.ID_Soal = 'R' + o._row; return o; });
+}
+
+function inWin(p) {
+ const n = new Date(), f = s => s ? new Date(String(s).replace(' ', 'T')) : null, a = f(p.Waktu_Mulai), b = f(p.Waktu_Berakhir);
+ return (!a || n >= a) && (!b || n <= b);
+}
+
+function verifyAdminLogin(pw) {
+ return rowsC('adm').some(x => String(x.Password) === String(pw));
+}
+
+// Pencarian siswa/paket memakai cache; status siswa SELALU dibaca langsung dari barisnya (1 pembacaan kecil)
+function findSiswa(nama) {
+ const key = nz(nama);
+ const c = rowsC('siswa').find(x => nz(x.Nama_Siswa) === key);
+ if (!c) { // tidak ada di cache: cek langsung (mis. guru baru menambah siswa manual di sheet)
+   const f = rows('siswa').find(x => nz(x.Nama_Siswa) === key);
+   if (f) cbump();
+   return f || null;
+ }
+ const v = sh('siswa').getRange(c._row, 1, 1, 4).getValues()[0];
+ if (nz(v[0]) !== key) { // baris bergeser: muat ulang
+   cbump();
+   return rows('siswa').find(x => nz(x.Nama_Siswa) === key) || null;
+ }
+ return {_row: c._row, Nama_Siswa: v[0], Kelas: v[1], Status_Ujian: v[2], Status_Akun: v[3]};
+}
+function findPaket(token) {
+ const t = String(token).trim().toUpperCase(), f = x => String(x.Token_Paket_Soal).trim().toUpperCase() === t;
+ const c = rowsC('paket').find(f);
+ if (c) return c;
+ const l = rows('paket').find(f);
+ if (l) cbump();
+ return l || null;
+}
+// Cek hasil sudah ada: hanya membaca kolom Nama & Paket (tanpa kolom JSON jawaban yang besar)
+function hasilRow(nama, paket) {
+ const s = sh('hasil'), last = s.getLastRow();
+ if (last < 2) return 0;
+ const a = s.getRange(2, 2, last - 1, 1).getValues(), b = s.getRange(2, 9, last - 1, 1).getValues();
+ for (let i = 0; i < a.length; i++) if (a[i][0] === nama && b[i][0] === paket) return i + 2;
+ return 0;
+}
+
+function verifyStudentLogin(nama, token) {
+ const s = findSiswa(nama);
+ if (!s) return {ok:false, msg:'Nama siswa tidak terdaftar.'};
+ if (s.Status_Akun !== 'Aktif') return {ok:false, msg:'Akun Anda nonaktif. Hubungi guru.'};
+
+ const p = findPaket(token);
+ if (!p) return {ok:false, msg:'Token paket soal salah.'};
+ if (p.Status !== 'Aktif') return {ok:false, msg:'Paket soal belum aktif.'};
+ if (!inWin(p)) return {ok:false, msg:'Ujian di luar jadwal yang ditentukan.'};
+ if (hasilRow(s.Nama_Siswa, p.Nama_Paket_Soal)) return {ok:false, msg:'Anda sudah menyelesaikan ujian ini.'};
+ const resume = s.Status_Ujian === 'Sedang Ujian: ' + p.Nama_Paket_Soal;
+ let progres = null;
+ if (resume) progres = getProgress(s.Nama_Siswa, p.Nama_Paket_Soal, s._row);
+ else clearProg(s.Nama_Siswa, p.Nama_Paket_Soal, s._row); // sisa lama dibuang
+ sh('siswa').getRange(s._row, 3).setValue('Sedang Ujian: ' + p.Nama_Paket_Soal);
+ return {ok:true, resume, progres, judul:cfgC().judul, nama:s.Nama_Siswa, kelas:s.Kelas, token:String(p.Token_Paket_Soal),
+   paket:{nama:p.Nama_Paket_Soal, mapel:p.Mata_Pelajaran, durasi:Number(p['Durasi_(Menit)']) || 60},
+   tib:rowsC('tib').map(x => x.Tata_Tertib)};
+}
+
+// Kunci_Jawaban & Pembahasan TIDAK dikirim ke browser siswa
+function getQuestionsForStudent(token) {
+ const p = findPaket(token);
+ if (!p || pn(p.Status) !== 'aktif') throw new Error('Token tidak valid');
+ return memo('qs:' + pn(p.Nama_Paket_Soal), 300, () => buildQuestions(p));
+}
+function buildQuestions(p) {
+ const all = rowsC('soal'), qs = all.filter(x => pn(x.Paket) === pn(p.Nama_Paket_Soal));
+ if (!qs.length) throw new Error('Belum ada soal untuk paket "' + p.Nama_Paket_Soal + '". Paket yang tercatat di Master_Soal: ' + (Array.from(new Set(all.map(x => x.Paket))).join(', ') || '(kosong)') + '. Kolom Paket harus sama dengan Nama_Paket_Soal.');
+ qs.sort((a, b) => (Number(a.Nomor_Soal) || 0) - (Number(b.Nomor_Soal) || 0));
+ // Dikirim sebagai teks JSON agar aman dari masalah serialisasi
+ return JSON.stringify(qs.map(q => {
+   const o = {};
+   H.soal.forEach(c => { if (c === 'Kunci_Jawaban' || c === 'Pembahasan') return; const v = q[c]; o[c] = v == null ? '' : (typeof v === 'number' ? v : String(v)); });
+   return o;
+ }));
+}
+
+const R2 = x => Math.round(x * 100) / 100;
+const OPT = ['A','B','C','D'];
+const hasOpt = (q, k) => { const v = q['Pilihan_' + k]; return v != null && String(v) !== ''; };
+
+// Skor satu soal -> {skor, maks}
+//  PG           : benar = bobot penuh, salah = 0
+//  PGK MCMA     : tiap pilihan (A-D) yang sesuai dengan kunci bernilai bobot/jumlah pilihan
+//                 contoh kunci A,B jawab A,C, bobot 2 -> A & D sesuai = 2/4 x 2 = 1
+//  PGK Kategori : tiap pernyataan yang jawabannya sesuai kunci bernilai bobot/jumlah pernyataan
+function scoreQ(q, a) {
+ const t = String(q.Jenis_Soal).split(':')[0], w = Number(q.Bobot) || 1;
+ const op = OPT.filter(k => hasOpt(q, k)), n = op.length || 1;
+ const arr = Array.isArray(a) ? a.map(String) : String(a == null ? '' : a).split(',');
+ let skor = 0;
+ if (t === 'PGK MCMA') {
+   const kk = nz(q.Kunci_Jawaban).split(',').filter(Boolean), aa = arr.map(nz).filter(Boolean);
+   if (aa.length) skor = w * op.filter(k => kk.includes(k.toLowerCase()) === aa.includes(k.toLowerCase())).length / n;
+ } else if (t === 'PGK Kategori') {
+   const kk = String(q.Kunci_Jawaban).split(',').map(nz);
+   skor = w * OPT.filter((k, i) => hasOpt(q, k) && nz(arr[i]) !== '' && nz(arr[i]) === kk[i]).length / n;
+ } else {
+   const x = nz(arr.join(','));
+   skor = x !== '' && x === nz(q.Kunci_Jawaban) ? w : 0;
+ }
+ return {skor: R2(skor), maks: w};
+}
+
+function soalPaket(pk, live) {
+ return (live ? rows('soal') : rowsC('soal')).filter(x => pn(x.Paket) === pn(pk.Nama_Paket_Soal)).sort((a, b) => (Number(a.Nomor_Soal) || 0) - (Number(b.Nomor_Soal) || 0));
+}
+
+function calcScore(pk, ans, qs) {
+ qs = qs || soalPaket(pk);
+ let tot = 0, got = 0;
+ const rev = qs.map(q => {
+   const a = ans[q.ID_Soal] == null ? '' : ans[q.ID_Soal], s = scoreQ(q, a);
+   tot += s.maks; got += s.skor;
+   return {no:q.Nomor_Soal, soal:q.Teks_Soal, jawab:Array.isArray(a) ? a.join(',') : a, kunci:q.Kunci_Jawaban,
+     skor:s.skor, maks:s.maks, benar:s.skor === s.maks, pembahasan:q.Pembahasan};
+ });
+ got = R2(got); tot = R2(tot);
+ return {nilai: tot ? R2(got / tot * 100) : 0, benar: got, salah: R2(tot - got), rev};
+}
+
+function submitStudentExam(nama, token, ans, viol) {
+ const sw = findSiswa(nama), pk = findPaket(token);
+ if (!sw || !pk) throw new Error('Data tidak valid');
+ return scoreSave(sw, pk, ans, viol);
+}
+
+// Rekap hanya ditulis SEKALI per siswa+paket. Penilaian dihitung DI LUAR kunci; bagian terkunci hanya
+// cek-ganda + tulis 1 baris (singkat), supaya 90 siswa yang kirim bersamaan tidak saling menunggu lama.
+// Total_Benar = skor benar (poin), Total_Salah = skor salah (poin)
+function scoreSave(sw, pk, ans, viol) {
+ const r = calcScore(pk, ans), dk = 'dn:' + nz(sw.Nama_Siswa) + '|' + pn(pk.Nama_Paket_Soal);
+ let dup = CC().get(dk) ? hasilRow(sw.Nama_Siswa, pk.Nama_Paket_Soal) : 0; // kirim ganda: tak perlu antre kunci
+ if (!dup) {
+   const lock = LockService.getScriptLock();
+   lock.waitLock(100000);
+   try {
+     dup = hasilRow(sw.Nama_Siswa, pk.Nama_Paket_Soal);
+     if (!dup) sh('hasil').appendRow([new Date(), sw.Nama_Siswa, sw.Kelas, r.nilai, r.benar, r.salah, viol || 0, JSON.stringify(ans), pk.Nama_Paket_Soal]);
+   } finally { lock.releaseLock(); }
+ }
+ if (dup) { // sudah terkirim: kembalikan hasil yang tersimpan
+   let a0 = {}; try { a0 = JSON.parse(sh('hasil').getRange(dup, 8).getValue() || '{}'); } catch (e) {}
+   return calcScore(pk, a0);
+ }
+ CC().put(dk, '1', 21600);
+ sh('siswa').getRange(sw._row, 3).setValue('Selesai');
+ clearProg(sw.Nama_Siswa, pk.Nama_Paket_Soal, sw._row);
+ return r;
+}
+
+// ===== Progres ujian (jawaban + sisa waktu) =====
+// Dipanggil browser siswa tiap ada perubahan jawaban dan berkala (mis. 10 detik) dengan sisa waktu terakhir.
+// Saat siswa reload / jendela tertutup, timer berhenti; saat login lagi, jawaban & sisa waktu dilanjutkan.
+// Baris progres tiap siswa diusahakan sama dengan nomor barisnya di sheet siswa -> tanpa kunci & tanpa pencarian.
+// Bila baris itu sudah dipakai data lain, jatuh ke jalur lama (kunci + cari/tambah baris).
+const progKey = (nama, paket) => 'pr:' + nz(nama) + '|' + pn(paket);
+function findProg(nama, paket, hint) {
+ const s = sh('prog'), last = s.getLastRow();
+ if (last < 2) return 0;
+ const c = CC(), k = progKey(nama, paket);
+ const chk = r => { if (!(r >= 2 && r <= last)) return false; const v = s.getRange(r, 1, 1, 2).getValues()[0]; return nz(v[0]) === nz(nama) && pn(v[1]) === pn(paket); };
+ const h = Number(c.get(k)) || 0;
+ if (h && chk(h)) return h;
+ if (hint && chk(hint)) { c.put(k, String(hint), 21600); return hint; }
+ const v = s.getRange(2, 1, last - 1, 2).getValues();
+ for (let i = 0; i < v.length; i++) if (nz(v[i][0]) === nz(nama) && pn(v[i][1]) === pn(paket)) { c.put(k, String(i + 2), 21600); return i + 2; }
+ return 0;
+}
+function clearProg(nama, paket, hint) {
+ const r = findProg(nama, paket, hint);
+ if (r) { sh('prog').getRange(r, 1, 1, H.prog.length).clearContent(); CC().remove(progKey(nama, paket)); }
+}
+
+function saveProgress(nama, token, ans, sisa, viol) {
+ const sw = findSiswa(nama), pk = findPaket(token);
+ if (!sw || !pk) throw new Error('Data tidak valid');
+ if (sw.Status_Ujian !== 'Sedang Ujian: ' + pk.Nama_Paket_Soal) return false; // sudah selesai / direset admin
+ const v = [sw.Nama_Siswa, pk.Nama_Paket_Soal, JSON.stringify(ans || {}), Math.max(0, Math.floor(Number(sisa) || 0)), new Date(), Number(viol) || 0];
+ const s = sh('prog');
+ let r = findProg(sw.Nama_Siswa, pk.Nama_Paket_Soal, sw._row);
+ if (!r) { const cand = sw._row; if (cand >= 2 && cand <= s.getMaxRows() && String(s.getRange(cand, 1).getValue()).trim() === '') r = cand; }
+ if (r) { s.getRange(r, 1, 1, v.length).setValues([v]); CC().put(progKey(sw.Nama_Siswa, pk.Nama_Paket_Soal), String(r), 21600); return true; }
+ const lock = LockService.getScriptLock(); // jalur cadangan
+ lock.waitLock(20000);
+ try {
+   const r2 = findProg(sw.Nama_Siswa, pk.Nama_Paket_Soal);
+   if (r2) s.getRange(r2, 1, 1, v.length).setValues([v]); else s.appendRow(v);
+ } finally { lock.releaseLock(); }
+ return true;
+}
+
+function getProgress(nama, paket, hint) {
+ const r = findProg(nama, paket, hint);
+ if (!r) return null;
+ const v = sh('prog').getRange(r, 1, 1, H.prog.length).getValues()[0];
+ let jawaban = {}; try { jawaban = JSON.parse(v[2] || '{}'); } catch (e) {}
+ const sisa = Number(v[3]);
+ return {jawaban, sisa: isNaN(sisa) || v[3] === '' ? null : sisa, viol: Number(v[5]) || 0, t: v[4] instanceof Date ? v[4].getTime() : 0};
+}
+
+const cleanAns = a => { const o = Object.assign({}, a || {}); delete o.__ragu; delete o.__i; return o; };
+
+// Progres semua siswa untuk satu paket: {kunciNama: {ans, sisa, t(ms), viol}}
+function progMap(paket) {
+ const s = sh('prog'), last = s.getLastRow(), m = {};
+ if (last < 2) return m;
+ s.getRange(2, 1, last - 1, H.prog.length).getValues().forEach(v => {
+   if (String(v[0]).trim() === '' || pn(v[1]) !== pn(paket)) return;
+   let ans = {}; try { ans = JSON.parse(v[2] || '{}'); } catch (e) {}
+   const sisa = Number(v[3]);
+   m[nz(v[0])] = {ans, sisa: isNaN(sisa) || v[3] === '' ? null : sisa, t: v[4] instanceof Date ? v[4].getTime() : 0, viol: Number(v[5]) || 0};
+ });
+ return m;
+}
+
+// Dikosongkan (bukan deleteRow) agar nomor baris progres siswa lain tidak bergeser saat ada yang bersamaan
+function delProg(f) {
+ const s = sh('prog');
+ rows('prog').filter(f).forEach(x => { s.getRange(x._row, 1, 1, H.prog.length).clearContent(); CC().remove(progKey(x.Nama_Siswa, x.Paket)); });
+}
+
+function logViolation(nama, jenis) {
+ const s = findSiswa(nama);
+ if (!s) return;
+ const lock = LockService.getScriptLock();
+ let got = false;
+ try { lock.waitLock(15000); got = true; } catch (e) {}
+ try { sh('log').appendRow([new Date(), s.Nama_Siswa, s.Kelas, jenis, new Date(), s.Status_Ujian]); }
+ finally { if (got) lock.releaseLock(); }
+}
+
+function getExamResultsForAdmin(pw) { return admin(pw, 'list', {k:'hasil'}); }
+function saveSingleQuestion(pw, o, row) { return admin(pw, 'save', {k:'soal', o, row}); }
+
+function cfg() {
+ let s = SpreadsheetApp.getActive().getSheetByName(N.set);
+ if (!s) { s = SpreadsheetApp.getActive().insertSheet(N.set); s.getRange(1, 1, 3, 2).setValues([['Kunci','Nilai'],['judul',JUDUL],['logo','']]); }
+ const o = {judul:JUDUL, logo:'', subjudul:'Computer Based Test', judul_admin:'Admin CBT', subjudul_admin:''};
+ s.getDataRange().getValues().slice(1).forEach(r => { if (r[0]) o[r[0]] = String(r[1]); });
+ return o;
+}
+function getSettings() { return cfgC(); }
+function setKV(key, val) {
+ const s = sh('set'), v = s.getDataRange().getValues();
+ for (let i = 1; i < v.length; i++) if (v[i][0] === key) { s.getRange(i + 1, 2).setValue(val); return; }
+ s.appendRow([key, val]);
+}
+
+// Folder khusus gambar (dibuat otomatis). Jalankan izinDrive() sekali dari editor untuk memberi izin Drive.
+function imgFolder() {
+ const P = PropertiesService.getScriptProperties();
+ let id = P.getProperty('IMG_FOLDER');
+ if (id) { try { return DriveApp.getFolderById(id); } catch (e) {} }
+ const f = DriveApp.createFolder('CBT_Gambar');
+ P.setProperty('IMG_FOLDER', f.getId());
+ return f;
+}
+function izinDrive() { imgFolder(); return 'Izin Drive OK'; }
+
+function uploadImage(pw, name, mime, b64) {
+ if (!verifyAdminLogin(pw)) throw new Error('Akses ditolak');
+ if (!/^image\/(png|jpe?g|gif|webp)$/.test(mime)) throw new Error('Format gambar tidak didukung');
+ const f = imgFolder().createFile(Utilities.newBlob(Utilities.base64Decode(b64), mime, name));
+ // Jika akun sekolah melarang berbagi publik, abaikan: gambar tetap tampil lewat getImg()
+ try { f.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch (e) {}
+ return 'https:\/\/drive.google.com/thumbnail?sz=w1200&id=' + f.getId();
+}
+
+// Mengirim gambar sebagai data-URI (tidak butuh file dibagikan publik). Hanya file di folder CBT_Gambar.
+function getImg(id) {
+ if (!/^[\w-]{10,}$/.test(String(id))) throw new Error('ID gambar tidak valid');
+ const ck = 'img:' + id, hit = cget(ck); // hanya id yang lolos pemeriksaan folder yang pernah masuk cache
+ if (hit) return hit;
+ const f = DriveApp.getFileById(id), fid = imgFolder().getId(), ps = f.getParents();
+ let ok = false;
+ while (ps.hasNext()) if (ps.next().getId() === fid) ok = true;
+ if (!ok) throw new Error('Gambar tidak diizinkan');
+ const b = f.getBlob(), d = 'data:' + b.getContentType() + ';base64,' + Utilities.base64Encode(b.getBytes());
+ cput(ck, d, 21600);
+ return d;
+}
+
+function delHasil(f) {
+ const s = sh('hasil');
+ rows('hasil').filter(f).sort((a, b) => b._row - a._row).forEach(x => s.deleteRow(x._row));
+}
+
+const READ_ACTS = {dash:1, list:1, monitor:1, jawaban:1, pantau:1};
+function admin(pw, a, p) {
+ if (!verifyAdminLogin(pw)) throw new Error('Akses ditolak');
+ // Monitor/Live Score: hasil dibagi pakai selama 8 detik walau dibuka di banyak tab/perangkat
+ if (a === 'pantau') return memo('pantau:' + pn((p || {}).v), 8, () => adminRun_(pw, a, p));
+ try { return adminRun_(pw, a, p); }
+ finally { if (!READ_ACTS[a]) cbump(); } // perubahan data -> cache lama tidak dipakai lagi
+}
+function adminRun_(pw, a, p) {
+ if (!verifyAdminLogin(pw)) throw new Error('Akses ditolak');
+ p = p || {};
+ const k = p.k, ok = ['soal','siswa','paket','adm','log'];
+ if (a === 'dash') {
+   const h = rows('hasil'), pk = rows('paket');
+   return {selesai:new Set(h.map(x => x.Nama_Siswa)).size, paket:pk.length, aktif:pk.filter(x => x.Status === 'Aktif').length, siswa:rows('siswa').length, pel:rows('log').length};
+ }
+ if (a === 'list') return rows(k);
+ if (a === 'save') {
+   if (ok.indexOf(k) < 0) throw new Error('Tidak diizinkan');
+   const o = p.o;
+   if (k === 'soal' && !o.ID_Soal) o.ID_Soal = 'S' + Date.now();
+   if (k === 'paket' && !o.Token_Paket_Soal) o.Token_Paket_Soal = Math.random().toString(36).slice(2, 8).toUpperCase();
+   if (k === 'siswa') { o.Status_Ujian = o.Status_Ujian || 'Belum'; o.Status_Akun = o.Status_Akun || 'Aktif'; }
+   const v = H[k].map(c => o[c] == null ? '' : o[c]);
+   if (k === 'soal') sh(k).getRange(p.row || sh(k).getLastRow() + 1, 5, 1, 10).setNumberFormat('@'); // teks polos: "1/2" tidak jadi tanggal
+   if (p.row) sh(k).getRange(p.row, 1, 1, v.length).setValues([v]); else sh(k).appendRow(v);
+   return true;
+ }
+ if (a === 'del') {
+   if (ok.indexOf(k) < 0) throw new Error('Tidak diizinkan');
+   if (k === 'adm' && rows('adm').length < 2) throw new Error('Minimal harus ada satu password admin.');
+   sh(k).deleteRow(p.row);
+   return true;
+ }
+ if (a === 'reset') {
+   // Reset menghapus hasil DAN progres (jawaban + sisa waktu) supaya siswa mulai dari awal.
+   if (p.type === 'siswa') {
+     sh('siswa').getRange(p.row, 3).setValue('Belum');
+     delHasil(x => x.Nama_Siswa === p.nama && (!p.v || x.Paket === p.v));
+     delProg(x => nz(x.Nama_Siswa) === nz(p.nama) && (!p.v || pn(x.Paket) === pn(p.v)));
+   } else if (p.type === 'pilih') { // reset beberapa siswa terpilih (checkbox)
+     const names = new Set((p.names || []).map(nz));
+     rows('siswa').filter(s => names.has(nz(s.Nama_Siswa))).forEach(s => sh('siswa').getRange(s._row, 3).setValue('Belum'));
+     delHasil(x => names.has(nz(x.Nama_Siswa)) && (!p.v || x.Paket === p.v));
+     delProg(x => names.has(nz(x.Nama_Siswa)) && (!p.v || pn(x.Paket) === pn(p.v)));
+     return names.size;
+   } else { // reset semua peserta
+     rows('siswa').forEach(s => sh('siswa').getRange(s._row, 3).setValue('Belum'));
+     delHasil(x => x.Paket === p.v);
+     delProg(x => pn(x.Paket) === pn(p.v));
+   }
+   return true;
+ }
+ if (a === 'import') {
+   const s = sh('siswa'), have = new Set(rows('siswa').map(x => nz(x.Nama_Siswa))), v = [], src = p.list || [];
+   src.forEach(r => {
+     const n = String(r.Nama_Siswa || '').trim(), key = nz(n);
+     if (!n || have.has(key)) return;
+     have.add(key);
+     v.push([n, String(r.Kelas == null ? '' : r.Kelas).trim(), 'Belum', r.Status_Akun === 'Nonaktif' ? 'Nonaktif' : 'Aktif']);
+   });
+   if (v.length) { const r0 = s.getLastRow() + 1; s.getRange(r0, 1, v.length, 2).setNumberFormat('@'); s.getRange(r0, 1, v.length, 4).setValues(v); }
+   return {added: v.length, skipped: src.length - v.length};
+ }
+ if (a === 'monitor') {
+   const h = rows('hasil').filter(x => x.Paket === p.v).map(x => x.Nama_Siswa);
+   const pg = {}; rows('prog').filter(x => pn(x.Paket) === pn(p.v)).forEach(x => pg[nz(x.Nama_Siswa)] = Number(x.Sisa_Detik));
+   return rows('siswa').map(s => ({_row:s._row, Nama_Siswa:s.Nama_Siswa, Kelas:s.Kelas, Sisa_Detik: pg[nz(s.Nama_Siswa)] == null ? '' : pg[nz(s.Nama_Siswa)],
+     Status_Pengerjaan: h.indexOf(s.Nama_Siswa) >= 0 ? 'Selesai' : (s.Status_Ujian === 'Sedang Ujian: ' + p.v ? 'Sedang Ujian' : 'Belum')}));
+ }
+ if (a === 'finish') {
+   const s = rows('siswa').find(x => x.Nama_Siswa === p.nama), pk = rows('paket').find(x => x.Nama_Paket_Soal === p.v);
+   if (!s || !pk) throw new Error('Data tidak ditemukan');
+   if (!rows('hasil').some(x => x.Nama_Siswa === s.Nama_Siswa && x.Paket === pk.Nama_Paket_Soal)) {
+     const g = getProgress(s.Nama_Siswa, pk.Nama_Paket_Soal); // nilai dari jawaban yang sudah tersimpan
+     scoreSave(s, pk, cleanAns(g && g.jawaban), g ? g.viol : 0);
+   }
+   return true;
+ }
+ if (a === 'importSoal') {
+   const s = sh('soal'), v = (p.list || []).map(o => H.soal.map(c => o[c] == null ? '' : o[c]));
+   if (!v.length) return 0;
+   const r = s.getLastRow() + 1;
+   s.getRange(r, 5, v.length, 10).setNumberFormat('@');
+   s.getRange(r, 1, v.length, H.soal.length).setValues(v);
+   return v.length;
+ }
+ if (a === 'jawaban') {
+   const pk = rows('paket').find(x => x.Nama_Paket_Soal === p.v);
+   if (!pk) return [];
+   const qs = soalPaket(pk, true);
+   return rows('hasil').filter(x => x.Paket === p.v).map(x => {
+     let ans = {}; try { ans = JSON.parse(x.Detail_Jawaban_JSON || '{}'); } catch (e) {}
+     const r = calcScore(pk, ans, qs);
+     return {_row:x._row, Nama_Siswa:x.Nama_Siswa, Kelas:x.Kelas, Jawaban:r.rev.map(v => v.no + ':' + (v.jawab || '-')).join(' | '),
+       Skor_Benar:x.Total_Benar, Skor_Salah:x.Total_Salah, Nilai:x.Nilai_Akhir, rev:r.rev};
+   });
+ }
+ if (a === 'rescore') {
+   const pk = rows('paket').find(x => x.Nama_Paket_Soal === p.v);
+   if (!pk) throw new Error('Paket tidak ditemukan');
+   const qs = soalPaket(pk, true), s = sh('hasil');
+   let n = 0;
+   rows('hasil').filter(x => x.Paket === p.v && (!p.nama || x.Nama_Siswa === p.nama)).forEach(x => {
+     let ans = {}; try { ans = JSON.parse(x.Detail_Jawaban_JSON || '{}'); } catch (e) {}
+     const r = calcScore(pk, ans, qs);
+     s.getRange(x._row, 4, 1, 3).setValues([[r.nilai, r.benar, r.salah]]); n++;
+   });
+   return n;
+ }
+ if (a === 'copyPaket') { // salin paket beserta seluruh soalnya
+   const pk = rows('paket').find(x => x.Nama_Paket_Soal === p.v);
+   if (!pk) throw new Error('Paket tidak ditemukan');
+   const all = rows('paket'), names = new Set(all.map(x => pn(x.Nama_Paket_Soal))), toks = new Set(all.map(x => String(x.Token_Paket_Soal).toUpperCase()));
+   let nm = pk.Nama_Paket_Soal + ' (Salinan)', i = 2;
+   while (names.has(pn(nm))) nm = pk.Nama_Paket_Soal + ' (Salinan ' + (i++) + ')';
+   let tok; do { tok = Math.random().toString(36).slice(2, 8).toUpperCase(); } while (!tok || toks.has(tok));
+   sh('paket').appendRow([nm, pk.Mata_Pelajaran, pk['Durasi_(Menit)'], 'Nonaktif', tok, pk.Waktu_Mulai, pk.Waktu_Berakhir]);
+   const qs = soalPaket(pk, true), base = Date.now();
+   if (qs.length) {
+     const v = qs.map((q, j) => H.soal.map(c => c === 'ID_Soal' ? 'S' + base + '_' + j : c === 'Paket' ? nm : (q[c] == null ? '' : q[c])));
+     const s = sh('soal'), r = s.getLastRow() + 1;
+     s.getRange(r, 5, v.length, 10).setNumberFormat('@');
+     s.getRange(r, 1, v.length, H.soal.length).setValues(v);
+   }
+   return {nama: nm, soal: qs.length, token: tok};
+ }
+ if (a === 'pantau') { // monitor & live score: status, jawaban terisi, skor sementara, sisa waktu
+   const pk = rows('paket').find(x => x.Nama_Paket_Soal === p.v);
+   if (!pk) return {paket: p.v, total_soal: 0, rows: []};
+   const nm = pk.Nama_Paket_Soal, qs = soalPaket(pk), pg = progMap(nm), now = Date.now(), dur = (Number(pk['Durasi_(Menit)']) || 60) * 60, hm = {};
+   rows('hasil').filter(x => pn(x.Paket) === pn(nm)).forEach(x => hm[nz(x.Nama_Siswa)] = x);
+   const cnt = ans => qs.filter(q => { const v = ans[q.ID_Soal]; return Array.isArray(v) ? v.some(Boolean) : (v != null && String(v) !== ''); }).length;
+   const out = rows('siswa').map(s => {
+     const key = nz(s.Nama_Siswa), h = hm[key], g = pg[key];
+     const o = {_row: s._row, Nama_Siswa: s.Nama_Siswa, Kelas: s.Kelas, Status: 'Belum Mulai', Dijawab: 0, Terakhir_Aktif: '', Skor_Benar: '', Skor_Salah: '', Nilai: '', Waktu_Selesai: '', Sisa_Detik: '', Online: false};
+     if (h) {
+       let ans = {}; try { ans = JSON.parse(h.Detail_Jawaban_JSON || '{}'); } catch (e) {}
+       Object.assign(o, {Status: 'Selesai', Dijawab: cnt(ans), Terakhir_Aktif: h.Timestamp, Skor_Benar: h.Total_Benar, Skor_Salah: h.Total_Salah, Nilai: h.Nilai_Akhir, Waktu_Selesai: h.Timestamp});
+     } else if (s.Status_Ujian === 'Sedang Ujian: ' + nm) {
+       const ans = cleanAns(g && g.ans), r = calcScore(pk, ans, qs), age = g && g.t ? Math.max(0, (now - g.t) / 1000) : null, on = age != null && age <= 75;
+       Object.assign(o, {Status: 'Sedang Mengerjakan', Dijawab: cnt(ans), Skor_Benar: r.benar, Skor_Salah: r.salah, Nilai: r.nilai, Online: on,
+         Terakhir_Aktif: g && g.t ? Utilities.formatDate(new Date(g.t), TZ, 'yyyy-MM-dd HH:mm:ss') : '',
+         Sisa_Detik: g && g.sisa != null ? Math.round(on ? Math.max(0, g.sisa - age) : g.sisa) : dur});
+     }
+     return o;
+   });
+   return {paket: nm, total_soal: qs.length, rows: out};
+ }
+ if (a === 'delLog') { // hapus catatan pelanggaran: p.rows = [{row, nama}], diverifikasi nama agar tidak salah hapus
+   const s = sh('log'), list = (p.rows || []).map(x => ({row: Number(x.row), nama: x.nama})).filter(x => x.row > 1).sort((a, b) => b.row - a.row);
+   let n = 0;
+   list.forEach(x => { if (nz(s.getRange(x.row, 2).getValue()) === nz(x.nama)) { s.deleteRow(x.row); n++; } });
+   return n;
+ }
+ if (a === 'delSoal') { // hapus soal terpilih (p.ids = ID_Soal) atau semua soal sebuah paket (p.all), diverifikasi per paket
+   const lock = LockService.getScriptLock();
+   lock.waitLock(30000);
+   try {
+     const s = sh('soal'), ids = new Set((p.ids || []).map(String));
+     const del = rows('soal').filter(x => pn(x.Paket) === pn(p.v) && (p.all || ids.has(String(x.ID_Soal))));
+     del.sort((a, b) => b._row - a._row).forEach(x => s.deleteRow(x._row));
+     return del.length;
+   } finally { lock.releaseLock(); }
+ }
+ if (a === 'dedup') { // hapus baris hasil ganda (siswa+paket sama), simpan yang terbaru
+   const all = rows('hasil'), keep = {}, del = [];
+   all.forEach(x => { const key = nz(x.Nama_Siswa) + '|' + pn(x.Paket); if (!keep[key] || x._row > keep[key]._row) { if (keep[key]) del.push(keep[key]); keep[key] = x; } else del.push(x); });
+   const s = sh('hasil');
+   del.sort((a, b) => b._row - a._row).forEach(x => s.deleteRow(x._row));
+   return del.length;
+ }
+ if (a === 'setting') {
+   cfg(); setKV('judul', p.judul); setKV('subjudul', p.subjudul == null ? '' : p.subjudul);
+   setKV('judul_admin', p.judul_admin || ''); setKV('subjudul_admin', p.subjudul_admin == null ? '' : p.subjudul_admin);
+   setKV('logo', p.logo || ''); return true;
+ }
+ throw new Error('Aksi tidak dikenal');
+}
