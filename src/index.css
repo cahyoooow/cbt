@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    font-family: var(--font-sans);
+    background-color: #f3f6fa;
+    color: #1e293b;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Smooth thin scrollbars for drawers and horizontal tables */
+.scrollbar-smooth::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-smooth::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-smooth::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+.scrollbar-smooth::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.55);
+}
+
+/* Formatting pecahan dan akar matematika CBT */
+.cbt-frac {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  margin: 0 0.2em;
+  font-size: 0.88em;
+  line-height: 1.1;
+}
+
+.cbt-frac > span:first-child {
+  border-bottom: 1.5px solid currentColor;
+  padding: 0 0.25em 0.1em;
+}
+
+.cbt-frac > span:last-child {
+  padding: 0.1em 0.25em 0;
+}
+
+.cbt-sqrt {
+  display: inline-flex;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.cbt-sqrt-rad {
+  border-top: 1.5px solid currentColor;
+  padding: 0 0.2em 0 0.1em;
+  margin-left: 0.05em;
+}
+
+.exam-nosel {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #FFFFFF !important;
+    color: #000000 !important;
+  }
+}
