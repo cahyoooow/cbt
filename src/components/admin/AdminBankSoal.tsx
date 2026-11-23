@@ -4,6 +4,7 @@ import {
   Eye,
   FileSpreadsheet,
   FileText,
+  FileUp,
   HelpCircle,
   Pencil,
   Plus,
@@ -30,6 +31,7 @@ import {
   type TkaBidang,
 } from '../../utils/tkaFramework';
 import { CbtImage, ImageLightbox, RichText } from '../RichText';
+import { WordImportModal } from './WordImportModal';
 
 interface Props {
   settings?: Pengaturan;
@@ -79,6 +81,7 @@ export function AdminBankSoal({ settings, pakets, soals, onRefresh, onToast }: P
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [formOpen, setFormOpen] = useState(false);
+  const [wordModalOpen, setWordModalOpen] = useState(false);
   const [previewAllOpen, setPreviewAllOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [zoomImg, setZoomImg] = useState<{ url: string; alt: string } | null>(null);
@@ -514,6 +517,21 @@ export function AdminBankSoal({ settings, pakets, soals, onRefresh, onToast }: P
             Impor Excel
             <input type="file" accept=".xlsx,.csv" className="hidden" onChange={handleImportExcel} />
           </label>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (!activePaket) {
+                onToast('Buat paket soal terlebih dahulu di menu Daftar Ujian.', 'err');
+                return;
+              }
+              setWordModalOpen(true);
+            }}
+            className="min-h-[42px] sm:min-h-[36px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-indigo-600/20"
+          >
+            <FileUp className="w-4 h-4" strokeWidth={1.85} />
+            Impor Word
+          </button>
 
           <button
             type="button"
@@ -1334,6 +1352,21 @@ export function AdminBankSoal({ settings, pakets, soals, onRefresh, onToast }: P
           </div>
         </div>
       )}
+
+      <WordImportModal
+        open={wordModalOpen}
+        paket={activePaket}
+        existingCount={paketSoals.length}
+        onClose={() => setWordModalOpen(false)}
+        onImported={async (count) => {
+          await onRefresh();
+          onToast(
+            `${count} soal dari Word berhasil diimpor ke "${activePaket?.nama_paket_soal || 'Paket'}".`,
+            'ok'
+          );
+        }}
+        onToast={onToast}
+      />
 
       <ImageLightbox image={zoomImg} onClose={() => setZoomImg(null)} />
     </div>
