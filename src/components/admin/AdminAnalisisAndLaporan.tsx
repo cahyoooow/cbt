@@ -17,13 +17,11 @@ import {
   Search,
   Trash2,
   Upload,
-  UploadCloud,
   X,
 } from 'lucide-react';
 import {
   deletePelanggaranByIds,
   importPelanggaranBatch,
-  migratePelanggaranFromGas,
   rescoreHasil,
   resetPelanggaran,
   updatePelanggaran,
@@ -71,19 +69,6 @@ export function AdminAnalisisAndLaporan({
   const [selectedLogIds, setSelectedLogIds] = useState<Set<string>>(new Set());
   const [rescoring, setRescoring] = useState(false);
   const [importingLogs, setImportingLogs] = useState(false);
-  const [showGasSync, setShowGasSync] = useState(false);
-  const [syncGasUrl, setSyncGasUrl] = useState(() => {
-    try {
-      return (
-        localStorage.getItem('cbt_legacy_gas_url') ||
-        'https://script.google.com/macros/s/AKfycbwCLsMHzKd_wqwLX-5w71sKtmubFHSxAgcr1Bdlcr-IESMcl21QBlKyBoI3L0df3a1X/exec'
-      );
-    } catch {
-      return 'https://script.google.com/macros/s/AKfycbwCLsMHzKd_wqwLX-5w71sKtmubFHSxAgcr1Bdlcr-IESMcl21QBlKyBoI3L0df3a1X/exec';
-    }
-  });
-  const [syncGasPw, setSyncGasPw] = useState('');
-  const [syncingGas, setSyncingGas] = useState(false);
 
   // Pelanggaran Edit & Reset modals
   const [editLog, setEditLog] = useState<LogPelanggaran | null>(null);
@@ -1291,7 +1276,7 @@ export function AdminAnalisisAndLaporan({
                 <button
                   type="button"
                   onClick={() => setFilterKategori('')}
-                  className="text-xs font-semibold text-blue-600 hover:underline cursor-pointer"
+                  className="text-xs font-semibold text-sky-600 hover:underline cursor-pointer"
                 >
                   Menampilkan kategori {filterKategori} · Tampilkan Semua
                 </button>
@@ -1520,33 +1505,6 @@ export function AdminAnalisisAndLaporan({
     }
   };
 
-  const handleSyncGasPelanggaran = async () => {
-    if (!syncGasUrl.trim() || !syncGasPw) {
-      onToast('Isi URL Web App Apps Script dan password admin lama terlebih dahulu.', 'err');
-      return;
-    }
-    setSyncingGas(true);
-    try {
-      try {
-        localStorage.setItem('cbt_legacy_gas_url', syncGasUrl.trim());
-      } catch {
-        // ignore storage quota errors
-      }
-      const res = await migratePelanggaranFromGas(syncGasUrl.trim(), syncGasPw);
-      await onRefresh();
-      setShowGasSync(false);
-      setSyncGasPw('');
-      onToast(
-        `Sinkron selesai! ${res.added} log pelanggaran baru ditambahkan${res.skipped > 0 ? ` (${res.skipped} sudah ada)` : ''}.`,
-        'ok'
-      );
-    } catch (err) {
-      onToast(err instanceof Error ? err.message : 'Gagal mengambil log dari Apps Script.', 'err');
-    } finally {
-      setSyncingGas(false);
-    }
-  };
-
   const handleExportPelanggaranPdf = () => {
     exportTablePdf({
       filename: 'log_pelanggaran.pdf',
@@ -1693,7 +1651,8 @@ export function AdminAnalisisAndLaporan({
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
-            Log aktivitas pindah tab/jendela selama ujian serta data migrasi dari Google Spreadsheet.
+            Log aktivitas pindah tab/jendela selama ujian yang tersimpan langsung di Google
+            Spreadsheet.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1726,14 +1685,6 @@ export function AdminAnalisisAndLaporan({
               Reset Pelanggaran
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => setShowGasSync((v) => !v)}
-            className="min-h-[38px] px-3.5 py-2 rounded-xl border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
-          >
-            <UploadCloud className="w-4 h-4" />
-            Tarik dari Spreadsheet
-          </button>
           <label className="min-h-[38px] px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors">
             <Upload className="w-4 h-4 text-slate-500" />
             {importingLogs ? 'Mengimpor...' : 'Impor Excel'}
@@ -1776,66 +1727,6 @@ export function AdminAnalisisAndLaporan({
           </button>
         </div>
       </div>
-
-      {showGasSync && (
-        <div className="bg-indigo-50/70 border border-indigo-200/80 rounded-2xl p-4 space-y-3">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-bold text-slate-900">
-                Sinkron Log Pelanggaran dari Google Apps Script / Spreadsheet
-              </h2>
-              <p className="text-xs text-slate-600 mt-0.5">
-                Mengambil sheet <strong>Log Pelanggaran</strong> langsung dari Web App Apps Script
-                tanpa menimpa paket, soal, atau nilai yang sudah ada.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowGasSync(false)}
-              className="p-1.5 rounded-lg text-slate-500 hover:bg-white cursor-pointer"
-              aria-label="Tutup"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end">
-            <div className="md:col-span-6">
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                URL Web App Apps Script (/exec)
-              </label>
-              <input
-                type="url"
-                value={syncGasUrl}
-                onChange={(e) => setSyncGasUrl(e.target.value)}
-                className="w-full min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-mono"
-              />
-            </div>
-            <div className="md:col-span-3">
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                Password Admin Lama
-              </label>
-              <input
-                type="password"
-                value={syncGasPw}
-                onChange={(e) => setSyncGasPw(e.target.value)}
-                placeholder="Password Apps Script"
-                className="w-full min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs"
-              />
-            </div>
-            <div className="md:col-span-3">
-              <button
-                type="button"
-                disabled={syncingGas}
-                onClick={handleSyncGasPelanggaran}
-                className="w-full min-h-[40px] px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${syncingGas ? 'animate-spin' : ''}`} />
-                {syncingGas ? 'Mengambil Data...' : 'Ambil Log Sekarang'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
         <select
@@ -1955,7 +1846,7 @@ export function AdminAnalisisAndLaporan({
             <div>Belum ada catatan pelanggaran{pelanggarans.length > 0 ? ' pada filter ini.' : '.'}</div>
             {pelanggarans.length === 0 && (
               <div className="text-xs text-slate-400">
-                Gunakan tombol <strong>Tarik dari Spreadsheet</strong> atau <strong>Impor Excel</strong> untuk menyalin data Log Pelanggaran dari Google Spreadsheet.
+                Gunakan tombol <strong>Impor Excel</strong> jika ingin menambahkan log pelanggaran dari file.
               </div>
             )}
           </div>
@@ -2067,7 +1958,7 @@ export function AdminAnalisisAndLaporan({
                     <div>Belum ada catatan pelanggaran{pelanggarans.length > 0 ? ' pada filter ini.' : '.'}</div>
                     {pelanggarans.length === 0 && (
                       <div className="text-xs text-slate-400 mt-1">
-                        Gunakan tombol <strong>Tarik dari Spreadsheet</strong> atau <strong>Impor Excel</strong> di atas untuk menyalin data Log Pelanggaran dari Google Spreadsheet.
+                        Gunakan tombol <strong>Impor Excel</strong> di atas jika ingin menambahkan log pelanggaran dari file.
                       </div>
                     )}
                   </td>
@@ -2181,7 +2072,7 @@ export function AdminAnalisisAndLaporan({
               <button
                 type="submit"
                 disabled={savingEditLog}
-                className="flex-1 min-h-[42px] rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold cursor-pointer"
+                className="flex-1 min-h-[42px] rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-60 text-white text-sm font-semibold transition-colors cursor-pointer"
               >
                 {savingEditLog ? 'Menyimpan...' : 'Simpan Perubahan'}
               </button>

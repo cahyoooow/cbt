@@ -92,6 +92,14 @@ export interface ProgresUjian {
   sisa_detik: number;
   pelanggaran: number;
   updated_at?: Date | null;
+  precomputed?: {
+    dijawab: number;
+    benar: number;
+    salah: number;
+    nilai: number;
+    online: boolean;
+    lastActiveLabel?: string;
+  };
 }
 
 export interface HasilUjian {

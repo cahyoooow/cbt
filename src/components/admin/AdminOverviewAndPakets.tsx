@@ -251,14 +251,14 @@ export function AdminOverviewAndPakets({
         val: siswaSelesai,
         sub: `dari ${siswas.length} terdaftar`,
         icon: Users,
-        iconBg: 'bg-sky-50 text-sky-600 border-sky-200/60',
+        iconBg: 'bg-sky-50 text-sky-600 border-sky-200/80',
       },
       {
         label: 'Paket Soal Ujian',
         val: pakets.length,
         sub: `${soals.length} total butir soal`,
         icon: FolderOpen,
-        iconBg: 'bg-indigo-50 text-indigo-600 border-indigo-200/60',
+        iconBg: 'bg-slate-100 text-slate-700 border-slate-200/80',
       },
       {
         label: 'Token Paket Aktif',
@@ -280,24 +280,25 @@ export function AdminOverviewAndPakets({
       <div className="space-y-5 sm:space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-lg sm:text-xl font-bold text-slate-900">Dashboard CBT</h1>
+            <h1 className="text-lg sm:text-xl font-bold text-[#0F172A]">Dashboard CBT</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Ringkasan paket ujian, peserta, dan aktivitas database Firebase Firestore.
+              Ringkasan paket ujian, peserta, dan aktivitas database Google Apps Script
+              (Spreadsheet).
             </p>
           </div>
           <div className="grid grid-cols-2 sm:flex items-center gap-2">
             <button
               type="button"
               onClick={() => onNavigate('set')}
-              className="min-h-[42px] sm:min-h-[38px] px-3 sm:px-3.5 py-2 rounded-xl border border-slate-200/90 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-2xs"
+              className="min-h-[42px] sm:min-h-[38px] px-3 sm:px-3.5 py-2 rounded-xl border border-sky-200/80 bg-white hover:bg-[#F2F8FF] text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-2xs"
             >
               <UploadCloud className="w-4 h-4 text-sky-600 shrink-0" strokeWidth={1.85} />
-              <span className="truncate">Migrasi Apps Script</span>
+              <span className="truncate">Koneksi Apps Script</span>
             </button>
             <button
               type="button"
               onClick={() => openForm()}
-              className="min-h-[42px] sm:min-h-[38px] px-3 sm:px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-blue-600/20"
+              className="min-h-[42px] sm:min-h-[38px] px-3 sm:px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-sky-500/20"
             >
               <Plus className="w-4 h-4 shrink-0" strokeWidth={2} />
               <span className="truncate">Tambah Paket</span>
@@ -307,14 +308,14 @@ export function AdminOverviewAndPakets({
 
         {/* Empty Onboarding Banner */}
         {pakets.length === 0 && (
-          <div className="bg-white border border-slate-200/80 shadow-xs rounded-2xl p-5 sm:p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="bg-white border border-sky-100 shadow-xs rounded-2xl p-5 sm:p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div className="space-y-1">
-              <h2 className="text-base font-bold text-slate-900">
-                Database Firestore Masih Kosong
+              <h2 className="text-base font-bold text-[#0F172A]">
+                Database Spreadsheet Masih Kosong
               </h2>
               <p className="text-sm text-slate-600 max-w-2xl leading-relaxed">
-                Anda dapat memigrasikan seluruh Paket, Bank Soal, Siswa, dan Nilai dari Web App Apps
-                Script lama Anda dalam 1 klik, atau mengisi data contoh awal untuk menguji coba.
+                Tambahkan paket soal pertama Anda, periksa koneksi Web App Apps Script, atau isi
+                data contoh awal ke Google Spreadsheet untuk menguji coba.
               </p>
             </div>
             <div className="grid grid-cols-2 sm:flex items-center gap-2.5 shrink-0">
@@ -322,7 +323,7 @@ export function AdminOverviewAndPakets({
                 type="button"
                 disabled={seeding}
                 onClick={handleSeedSample}
-                className="min-h-[42px] px-4 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                className="min-h-[42px] px-4 py-2 rounded-xl border border-sky-200/80 bg-white hover:bg-[#F2F8FF] text-slate-800 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
               >
                 <Database className="w-4 h-4 text-sky-600" strokeWidth={1.85} />
                 {seeding ? 'Mengisi...' : 'Isi Contoh'}
@@ -330,10 +331,10 @@ export function AdminOverviewAndPakets({
               <button
                 type="button"
                 onClick={() => onNavigate('set')}
-                className="min-h-[42px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                className="min-h-[42px] px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
               >
                 <UploadCloud className="w-4 h-4" strokeWidth={1.85} />
-                Migrasi Data
+                Cek Koneksi
               </button>
             </div>
           </div>
@@ -346,7 +347,7 @@ export function AdminOverviewAndPakets({
             return (
               <div
                 key={k.label}
-                className="bg-white border border-slate-200/80 shadow-2xs hover:shadow-sm transition-shadow rounded-2xl p-4 sm:p-5"
+                className="bg-white border border-sky-100 shadow-2xs hover:shadow-sm transition-shadow rounded-2xl p-4 sm:p-5"
               >
                 <div className="flex items-start justify-between gap-2 mb-2.5">
                   <span className="text-xs font-medium text-slate-500 leading-snug">{k.label}</span>
@@ -368,18 +369,18 @@ export function AdminOverviewAndPakets({
         {/* Overview Tables & Mobile Lists */}
         <div className="grid lg:grid-cols-2 gap-4 sm:gap-5">
           {/* Paket Soal Card */}
-          <div className="bg-white border border-slate-200/80 shadow-2xs rounded-2xl overflow-hidden">
-            <div className="px-4 sm:px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+          <div className="bg-white border border-sky-100 shadow-2xs rounded-2xl overflow-hidden">
+            <div className="px-4 sm:px-5 py-3.5 border-b border-sky-100 flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <span className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                <span className="w-7 h-7 rounded-lg bg-sky-50 text-sky-600 flex items-center justify-center">
                   <FolderOpen className="w-4 h-4" strokeWidth={1.85} />
                 </span>
-                <h2 className="font-bold text-sm text-slate-900">Paket Soal Ujian</h2>
+                <h2 className="font-bold text-sm text-[#0F172A]">Paket Soal Ujian</h2>
               </div>
               <button
                 type="button"
                 onClick={() => onNavigate('paket')}
-                className="min-h-[36px] px-2 text-xs font-semibold text-blue-600 hover:text-blue-700 hover:underline cursor-pointer"
+                className="min-h-[36px] px-2 text-xs font-semibold text-sky-600 hover:text-sky-700 hover:underline cursor-pointer"
               >
                 Kelola Semua
               </button>
@@ -469,17 +470,17 @@ export function AdminOverviewAndPakets({
               {paketAktif.map((p) => (
                 <div key={p.id} className="p-4 flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="font-semibold text-sm text-slate-900 truncate">
+                    <div className="font-semibold text-sm text-[#0F172A] truncate">
                       {p.nama_paket_soal}
                     </div>
-                    <div className="font-mono font-bold text-sm text-blue-600 tracking-wider mt-0.5">
+                    <div className="font-mono font-bold text-sm text-sky-600 tracking-wider mt-0.5">
                       {p.token_paket_soal}
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => copyToken(p.id, p.token_paket_soal)}
-                    className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100 text-xs font-semibold text-slate-700 cursor-pointer shrink-0 transition-colors"
+                    className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-sky-200/80 bg-[#F2F8FF] hover:bg-[#E6F2FF] text-xs font-semibold text-slate-700 cursor-pointer shrink-0 transition-colors"
                   >
                     {copiedId === p.id ? (
                       <>
@@ -503,7 +504,7 @@ export function AdminOverviewAndPakets({
             {/* Desktop Table */}
             <div className="hidden md:block overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-slate-50/70 text-left text-xs text-slate-600 border-b border-slate-100">
+                <thead className="bg-[#F2F8FF] text-left text-xs text-slate-600 border-b border-sky-100">
                   <tr>
                     <th className="py-2.5 px-4">Nama Paket</th>
                     <th className="py-2.5 px-4">Token</th>
@@ -512,16 +513,16 @@ export function AdminOverviewAndPakets({
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {paketAktif.map((p) => (
-                    <tr key={p.id} className="hover:bg-slate-50/60 transition-colors">
-                      <td className="py-2.5 px-4 font-medium text-slate-900">{p.nama_paket_soal}</td>
-                      <td className="py-2.5 px-4 font-mono font-bold text-blue-600 tracking-wider">
+                    <tr key={p.id} className="hover:bg-[#F2F8FF]/70 transition-colors">
+                      <td className="py-2.5 px-4 font-medium text-[#0F172A]">{p.nama_paket_soal}</td>
+                      <td className="py-2.5 px-4 font-mono font-bold text-sky-600 tracking-wider">
                         {p.token_paket_soal}
                       </td>
                       <td className="py-2.5 px-4 text-right">
                         <button
                           type="button"
                           onClick={() => copyToken(p.id, p.token_paket_soal)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-sky-200/80 bg-white hover:bg-[#F2F8FF] text-xs font-medium text-slate-700 transition-colors cursor-pointer"
                         >
                           {copiedId === p.id ? (
                             <>
@@ -559,7 +560,7 @@ export function AdminOverviewAndPakets({
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg sm:text-xl font-bold text-slate-900">Daftar Ujian</h1>
+          <h1 className="text-lg sm:text-xl font-bold text-[#0F172A]">Daftar Ujian</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             Menampilkan {filteredPakets.length} dari {pakets.length} paket ujian.
           </p>
@@ -567,7 +568,7 @@ export function AdminOverviewAndPakets({
         <button
           type="button"
           onClick={() => openForm()}
-          className="w-full sm:w-auto min-h-[44px] sm:min-h-[38px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-blue-600/20"
+          className="w-full sm:w-auto min-h-[44px] sm:min-h-[38px] px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-sky-500/20"
         >
           <Plus className="w-4 h-4" strokeWidth={2} />
           Tambah Ujian
@@ -575,8 +576,8 @@ export function AdminOverviewAndPakets({
       </div>
 
       {/* Filter Status (Aktif/Nonaktif), Mata Pelajaran & Pencarian */}
-      <div className="bg-white border border-slate-200/80 shadow-2xs rounded-2xl p-3 sm:p-3.5 flex flex-col lg:flex-row lg:items-center gap-2.5">
-        <div className="grid grid-cols-3 sm:inline-flex bg-slate-100/90 p-1 rounded-xl shrink-0">
+      <div className="bg-white border border-sky-100 shadow-2xs rounded-2xl p-3 sm:p-3.5 flex flex-col lg:flex-row lg:items-center gap-2.5">
+        <div className="grid grid-cols-3 sm:inline-flex bg-[#F2F8FF] p-1 rounded-xl shrink-0">
           {(
             [
               { id: 'ALL', label: `Semua (${pakets.length})` },
@@ -592,8 +593,8 @@ export function AdminOverviewAndPakets({
                 onClick={() => setFilterStatus(item.id)}
                 className={`min-h-[36px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
                   active
-                    ? 'bg-white text-slate-900 shadow-2xs'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-white text-[#0F172A] shadow-2xs'
+                    : 'text-slate-600 hover:text-[#0F172A]'
                 }`}
               >
                 {item.label}
@@ -607,7 +608,7 @@ export function AdminOverviewAndPakets({
             value={filterMapel}
             onChange={(e) => setFilterMapel(e.target.value)}
             aria-label="Filter mata pelajaran"
-            className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+            className="min-h-[40px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
           >
             <option value="">Semua Mata Pelajaran</option>
             {mapelList.map((m) => (
@@ -625,7 +626,7 @@ export function AdminOverviewAndPakets({
                 value={searchPaket}
                 onChange={(e) => setSearchPaket(e.target.value)}
                 placeholder="Cari paket atau token..."
-                className="w-full min-h-[40px] pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                className="w-full min-h-[40px] pl-9 pr-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
               />
             </div>
             {hasActiveFilter && (
@@ -674,7 +675,7 @@ export function AdminOverviewAndPakets({
               <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-100 text-xs">
                 <div>
                   <div className="text-[11px] text-slate-400">Token</div>
-                  <div className="font-mono font-bold text-blue-600 mt-0.5">
+                  <div className="font-mono font-bold text-sky-600 mt-0.5">
                     {p.token_paket_soal}
                   </div>
                 </div>
@@ -786,7 +787,7 @@ export function AdminOverviewAndPakets({
                         {p.status}
                       </span>
                     </td>
-                    <td className="py-3 px-4 font-mono font-bold text-blue-600">
+                    <td className="py-3 px-4 font-mono font-bold text-sky-600">
                       {p.token_paket_soal}
                     </td>
                     <td className="py-3 px-4 text-xs text-slate-500 font-mono tabular-nums">
@@ -877,7 +878,7 @@ export function AdminOverviewAndPakets({
                   value={nama}
                   onChange={(e) => setNama(e.target.value)}
                   placeholder="Contoh: Matematika Kelas 6"
-                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                 />
               </div>
 
@@ -891,7 +892,7 @@ export function AdminOverviewAndPakets({
                   value={mapel}
                   onChange={(e) => setMapel(e.target.value)}
                   placeholder="Contoh: Matematika"
-                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                 />
               </div>
 
@@ -906,7 +907,7 @@ export function AdminOverviewAndPakets({
                   required
                   value={durasi}
                   onChange={(e) => setDurasi(Number(e.target.value))}
-                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                 />
               </div>
 
@@ -915,7 +916,7 @@ export function AdminOverviewAndPakets({
                 <select
                   value={status}
                   onChange={(e) => setStatus(e.target.value as 'Aktif' | 'Nonaktif')}
-                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                 >
                   <option value="Aktif">Aktif</option>
                   <option value="Nonaktif">Nonaktif</option>
@@ -932,13 +933,13 @@ export function AdminOverviewAndPakets({
                     required
                     value={token}
                     onChange={(e) => setToken(e.target.value.toUpperCase())}
-                    className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                   />
                   <button
                     type="button"
                     onClick={() => setToken(generateRandomToken(6))}
                     title="Acak Token"
-                    className="min-w-[42px] min-h-[42px] rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 flex items-center justify-center cursor-pointer"
+                    className="min-w-[42px] min-h-[42px] rounded-xl border border-sky-200/80 hover:bg-[#F2F8FF] text-slate-600 flex items-center justify-center cursor-pointer"
                   >
                     <RefreshCw className="w-4 h-4" />
                   </button>
@@ -953,7 +954,7 @@ export function AdminOverviewAndPakets({
                   type="datetime-local"
                   value={waktuMulai}
                   onChange={(e) => setWaktuMulai(e.target.value)}
-                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                 />
               </div>
 
@@ -965,7 +966,7 @@ export function AdminOverviewAndPakets({
                   type="datetime-local"
                   value={waktuBerakhir}
                   onChange={(e) => setWaktuBerakhir(e.target.value)}
-                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                 />
               </div>
 
@@ -975,7 +976,7 @@ export function AdminOverviewAndPakets({
                     type="checkbox"
                     checked={tampilkanNilai}
                     onChange={(e) => setTampilkanNilai(e.target.checked)}
-                    className="mt-0.5 rounded border-slate-300"
+                    className="mt-0.5 rounded border-slate-300 accent-sky-500"
                   />
                   <span>Tampilkan Nilai &amp; Pembahasan langsung setelah siswa mengirim</span>
                 </label>
@@ -984,7 +985,7 @@ export function AdminOverviewAndPakets({
                     type="checkbox"
                     checked={acakSoal}
                     onChange={(e) => setAcakSoal(e.target.checked)}
-                    className="mt-0.5 rounded border-slate-300"
+                    className="mt-0.5 rounded border-slate-300 accent-sky-500"
                   />
                   <span>Acak urutan soal per siswa (konsisten saat muat ulang)</span>
                 </label>
@@ -1002,7 +1003,7 @@ export function AdminOverviewAndPakets({
               <button
                 type="submit"
                 disabled={saving}
-                className="flex-1 min-h-[44px] py-2 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold transition-colors cursor-pointer"
+                className="flex-1 min-h-[44px] py-2 px-4 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-60 text-white text-sm font-semibold transition-colors cursor-pointer"
               >
                 {saving ? 'Menyimpan...' : 'Simpan Paket'}
               </button>

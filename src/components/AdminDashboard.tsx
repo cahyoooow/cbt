@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import {
+  invalidateAdminCaches,
   listAdminPassLabels,
   listHasil,
   listPaket,
@@ -80,7 +81,7 @@ const MENU_ITEMS: MenuItem[] = [
   { id: 'tka', label: 'Analisis Materi TKA', group: 'Laporan & TKA', icon: Layers },
   { id: 'pelanggaran', label: 'Pelanggaran', group: 'Laporan & TKA', icon: AlertTriangle },
   { id: 'akun', label: 'Password & Tata Tertib', group: 'Sistem', icon: KeyRound },
-  { id: 'set', label: 'Pengaturan & Migrasi', group: 'Sistem', icon: Settings },
+  { id: 'set', label: 'Pengaturan & Koneksi', group: 'Sistem', icon: Settings },
 ];
 
 const MENU_GROUPS: MenuItem['group'][] = [
@@ -111,6 +112,7 @@ export function AdminDashboard({
 
   const loadAll = useCallback(async () => {
     setLoading(true);
+    invalidateAdminCaches();
     try {
       const [pk, sl, sw, hs, pl, passes, tb] = await Promise.all([
         listPaket(),
@@ -156,7 +158,7 @@ export function AdminDashboard({
         const items = MENU_ITEMS.filter((m) => m.group === group);
         return (
           <div key={group} className="space-y-1">
-            <div className="px-3 pb-1 text-[11px] font-semibold text-slate-400/80 tracking-wide">
+            <div className="px-3 pb-1 text-[11px] font-semibold text-[#64748B] tracking-wide">
               {group}
             </div>
             {items.map((item) => {
@@ -171,23 +173,23 @@ export function AdminDashboard({
                     isMobile ? 'min-h-[44px]' : 'py-2'
                   } rounded-xl text-[13px] font-medium flex items-center justify-between gap-2.5 transition-all duration-150 cursor-pointer group ${
                     active
-                      ? 'bg-sky-500/18 text-white shadow-xs ring-1 ring-sky-400/30'
-                      : 'text-slate-300 hover:bg-slate-700/55 hover:text-white'
+                      ? 'bg-sky-50/95 text-sky-900 font-semibold ring-1 ring-sky-400/25'
+                      : 'text-[#475569] hover:bg-[#F2F8FF] hover:text-[#0F172A]'
                   }`}
                 >
                   <span className="flex items-center gap-2.5 min-w-0">
                     <span
                       className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
                         active
-                          ? 'bg-sky-500 text-white shadow-xs shadow-sky-900/40'
-                          : 'bg-slate-700/55 text-slate-300 group-hover:bg-slate-700 group-hover:text-sky-200'
+                          ? 'bg-sky-500 text-white shadow-2xs'
+                          : 'bg-[#F2F8FF] text-slate-500 group-hover:bg-sky-100/80 group-hover:text-sky-600'
                       }`}
                     >
-                      <Icon className="w-4 h-4" strokeWidth={1.85} />
+                      <Icon className="w-4 h-4" strokeWidth={1.75} />
                     </span>
                     <span className="truncate">{item.label}</span>
                   </span>
-                  {active && <ChevronRight className="w-3.5 h-3.5 text-sky-300 shrink-0" />}
+                  {active && <ChevronRight className="w-3.5 h-3.5 text-sky-600 shrink-0" />}
                 </button>
               );
             })}
@@ -198,18 +200,18 @@ export function AdminDashboard({
   );
 
   return (
-    <div className="min-h-screen bg-[#f3f6fa] flex flex-col md:flex-row">
+    <div className="min-h-screen bg-[#F0F7FF] flex flex-col md:flex-row">
       {/* Desktop Sidebar Navigation */}
-      <aside className="hidden md:flex md:w-64 lg:w-[264px] md:h-screen md:sticky md:top-0 bg-gradient-to-b from-slate-800 via-slate-800 to-slate-900 text-white shrink-0 flex-col border-r border-slate-700/40 no-print">
-        <div className="px-4 py-4 border-b border-slate-700/60 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-sky-500/15 border border-sky-400/25 text-sky-300 flex items-center justify-center shrink-0">
-            <ShieldCheck className="w-5 h-5" strokeWidth={1.85} />
+      <aside className="hidden md:flex md:w-64 lg:w-[264px] md:h-screen md:sticky md:top-0 bg-white text-[#0F172A] shrink-0 flex-col border-r border-sky-100 no-print">
+        <div className="px-4 py-4 border-b border-sky-100 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-sky-50 border border-sky-200/80 text-sky-500 flex items-center justify-center shrink-0">
+            <ShieldCheck className="w-5 h-5" strokeWidth={1.8} />
           </div>
           <div className="min-w-0">
-            <div className="font-bold text-sm text-white truncate">
+            <div className="font-bold text-sm text-[#0F172A] truncate">
               {settings.judul_admin || 'Admin CBT'}
             </div>
-            <div className="text-[11px] text-slate-400 truncate mt-0.5">{adminLabel}</div>
+            <div className="text-[11px] text-[#64748B] truncate mt-0.5">{adminLabel}</div>
           </div>
         </div>
 
@@ -217,14 +219,14 @@ export function AdminDashboard({
           {renderMenuList(false)}
         </nav>
 
-        <div className="p-3 border-t border-slate-700/60">
+        <div className="p-3 border-t border-sky-100">
           <button
             type="button"
             onClick={onLogout}
-            className="w-full px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-rose-500/15 hover:text-rose-200 flex items-center gap-2.5 transition-colors cursor-pointer"
+            className="w-full px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-600 hover:bg-rose-50 hover:text-rose-700 flex items-center gap-2.5 transition-colors cursor-pointer"
           >
-            <span className="w-7 h-7 rounded-lg bg-slate-700/60 flex items-center justify-center shrink-0">
-              <LogOut className="w-4 h-4" strokeWidth={1.85} />
+            <span className="w-7 h-7 rounded-lg bg-[#F2F8FF] flex items-center justify-center shrink-0">
+              <LogOut className="w-4 h-4" strokeWidth={1.75} />
             </span>
             <span>Keluar Admin</span>
           </button>
@@ -234,30 +236,30 @@ export function AdminDashboard({
       {/* Mobile Slide-Over Navigation Drawer */}
       {mobileMenuOpen && (
         <div
-          className="fixed inset-0 z-50 md:hidden bg-slate-900/50 backdrop-blur-[2px] flex no-print"
+          className="fixed inset-0 z-50 md:hidden bg-slate-900/35 backdrop-blur-[2px] flex no-print"
           onClick={() => setMobileMenuOpen(false)}
         >
           <aside
-            className="w-[290px] max-w-[85vw] h-full bg-gradient-to-b from-slate-800 to-slate-900 text-white flex flex-col shadow-2xl border-r border-slate-700/50"
+            className="w-[290px] max-w-[85vw] h-full bg-white text-[#0F172A] flex flex-col shadow-xl border-r border-sky-100"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="px-4 py-3.5 border-b border-slate-700/60 flex items-center justify-between gap-2">
+            <div className="px-4 py-3.5 border-b border-sky-100 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-9 h-9 rounded-xl bg-sky-500/15 border border-sky-400/25 text-sky-300 flex items-center justify-center shrink-0">
-                  <ShieldCheck className="w-5 h-5" strokeWidth={1.85} />
+                <div className="w-9 h-9 rounded-xl bg-sky-50 border border-sky-200/80 text-sky-500 flex items-center justify-center shrink-0">
+                  <ShieldCheck className="w-5 h-5" strokeWidth={1.8} />
                 </div>
                 <div className="min-w-0">
-                  <div className="font-bold text-sm text-white truncate">
+                  <div className="font-bold text-sm text-[#0F172A] truncate">
                     {settings.judul_admin || 'Admin CBT'}
                   </div>
-                  <div className="text-[11px] text-slate-400 truncate">{adminLabel}</div>
+                  <div className="text-[11px] text-[#64748B] truncate">{adminLabel}</div>
                 </div>
               </div>
               <button
                 type="button"
                 aria-label="Tutup menu"
                 onClick={() => setMobileMenuOpen(false)}
-                className="min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center text-slate-300 hover:bg-slate-700/60 hover:text-white transition-colors cursor-pointer"
+                className="min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center text-slate-500 hover:bg-[#F2F8FF] hover:text-[#0F172A] transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -267,16 +269,16 @@ export function AdminDashboard({
               {renderMenuList(true)}
             </nav>
 
-            <div className="p-3 border-t border-slate-700/60">
+            <div className="p-3 border-t border-slate-200/70">
               <button
                 type="button"
                 onClick={() => {
                   setMobileMenuOpen(false);
                   onLogout();
                 }}
-                className="w-full min-h-[44px] px-3 rounded-xl text-xs font-semibold text-rose-200 bg-rose-500/15 hover:bg-rose-500/25 flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                className="w-full min-h-[44px] px-3 rounded-xl text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100/80 flex items-center justify-center gap-2 transition-colors cursor-pointer"
               >
-                <LogOut className="w-4 h-4" strokeWidth={1.85} />
+                <LogOut className="w-4 h-4" strokeWidth={1.8} />
                 <span>Keluar Panel Admin</span>
               </button>
             </div>
@@ -286,13 +288,13 @@ export function AdminDashboard({
 
       {/* Main Content */}
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="sticky top-0 z-30 h-14 bg-white/90 backdrop-blur-md border-b border-slate-200/80 px-3 sm:px-5 flex items-center justify-between gap-2 sm:gap-4 no-print">
+        <header className="sticky top-0 z-30 h-14 bg-white/95 backdrop-blur-md border-b border-sky-100 px-3 sm:px-5 flex items-center justify-between gap-2 sm:gap-4 no-print">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <button
               type="button"
               aria-label="Buka menu navigasi"
               onClick={() => setMobileMenuOpen(true)}
-              className="md:hidden min-w-[44px] min-h-[44px] -ml-1 rounded-xl flex items-center justify-center text-slate-700 hover:bg-slate-100 active:bg-slate-200/70 transition-colors cursor-pointer shrink-0"
+              className="md:hidden min-w-[44px] min-h-[44px] -ml-1 rounded-xl flex items-center justify-center text-[#475569] hover:bg-[#F2F8FF] active:bg-sky-100 transition-colors cursor-pointer shrink-0"
             >
               <Menu className="w-5 h-5" strokeWidth={2} />
             </button>
@@ -307,15 +309,15 @@ export function AdminDashboard({
             )}
 
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="hidden sm:flex w-8 h-8 rounded-xl bg-sky-50 border border-sky-200/70 text-sky-600 items-center justify-center shrink-0">
-                <ActiveIcon className="w-4 h-4" strokeWidth={1.85} />
+              <div className="hidden sm:flex w-8 h-8 rounded-xl bg-sky-50 border border-sky-200/80 text-sky-500 items-center justify-center shrink-0">
+                <ActiveIcon className="w-4 h-4" strokeWidth={1.8} />
               </div>
               <div className="min-w-0">
-                <div className="font-bold text-sm text-slate-800 truncate leading-tight">
+                <div className="font-bold text-sm text-[#0F172A] truncate leading-tight">
                   <span className="md:hidden">{activeItem.label}</span>
                   <span className="hidden md:inline">{settings.judul}</span>
                 </div>
-                <div className="text-[11px] text-slate-500 truncate">
+                <div className="text-[11px] text-[#64748B] truncate">
                   <span className="md:hidden">{settings.judul}</span>
                   <span className="hidden md:inline">
                     {settings.subjudul_admin || activeItem.label}
@@ -331,9 +333,9 @@ export function AdminDashboard({
               disabled={loading}
               onClick={() => void loadAll()}
               aria-label="Segarkan data"
-              className="min-h-[40px] sm:min-h-[36px] min-w-[40px] sm:min-w-0 px-2.5 sm:px-3.5 rounded-xl border border-slate-200/90 bg-white hover:bg-slate-50 active:scale-[0.98] text-xs font-semibold text-slate-700 inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs"
+              className="min-h-[40px] sm:min-h-[36px] min-w-[40px] sm:min-w-0 px-2.5 sm:px-3.5 rounded-xl border border-sky-200/80 bg-white hover:bg-[#F0F7FF] active:scale-[0.98] text-xs font-semibold text-[#334155] inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs"
             >
-              <RefreshCw className={`w-4 h-4 text-sky-600 ${loading ? 'animate-spin' : ''}`} strokeWidth={1.9} />
+              <RefreshCw className={`w-4 h-4 text-sky-500 ${loading ? 'animate-spin' : ''}`} strokeWidth={1.85} />
               <span className="hidden sm:inline">Segarkan</span>
             </button>
           </div>
@@ -341,8 +343,8 @@ export function AdminDashboard({
 
         <main className="flex-1 p-3.5 sm:p-6 max-w-[1360px] w-full mx-auto">
           {loading && pakets.length === 0 ? (
-            <div className="py-16 text-center text-sm text-slate-500">
-              Memuat data CBT dari Firestore...
+            <div className="py-16 text-center text-sm text-[#64748B]">
+              Memuat data CBT dari Spreadsheet...
             </div>
           ) : (
             <>

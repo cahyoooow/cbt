@@ -305,7 +305,7 @@ export function AdminSiswaAndUjian({
       <div className="space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
-            <h1 className="text-lg sm:text-xl font-bold text-slate-900">Kelola Siswa</h1>
+            <h1 className="text-lg sm:text-xl font-bold text-[#0F172A]">Kelola Siswa</h1>
             <p className="text-xs text-slate-500 mt-0.5">
               Total {studentSummary.total} peserta didik di {studentSummary.totalKelas} kelas (
               {filteredSiswas.length} ditampilkan).
@@ -315,12 +315,12 @@ export function AdminSiswaAndUjian({
             <button
               type="button"
               onClick={() => openSiswaForm()}
-              className="min-h-[42px] sm:min-h-[38px] px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-blue-600/20"
+              className="min-h-[42px] sm:min-h-[38px] px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-sky-500/20"
             >
               <Plus className="w-4 h-4" strokeWidth={2} />
               Tambah Siswa
             </button>
-            <label className="min-h-[42px] sm:min-h-[38px] px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-emerald-600/20">
+            <label className="min-h-[42px] sm:min-h-[38px] px-3.5 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-emerald-900/10">
               <Upload className="w-4 h-4" strokeWidth={1.85} />
               Impor Excel
               <input type="file" accept=".xlsx,.csv" className="hidden" onChange={handleImportSiswa} />
@@ -361,14 +361,14 @@ export function AdminSiswaAndUjian({
 
         {/* Informasi Seluruh Peserta Didik */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="bg-white border border-slate-200/80 shadow-2xs rounded-2xl p-3.5 sm:p-4">
+          <div className="bg-white border border-sky-100 shadow-2xs rounded-2xl p-3.5 sm:p-4">
             <div className="flex items-center justify-between gap-2 mb-1.5">
               <span className="text-[11px] font-medium text-slate-500">Seluruh Peserta Didik</span>
               <span className="w-7 h-7 rounded-lg bg-sky-50 text-sky-600 flex items-center justify-center shrink-0">
                 <Users className="w-3.5 h-3.5" />
               </span>
             </div>
-            <div className="text-xl sm:text-2xl font-bold text-slate-900 font-mono tabular-nums">
+            <div className="text-xl sm:text-2xl font-bold text-[#0F172A] font-mono tabular-nums">
               {studentSummary.total}
             </div>
             <div className="text-[11px] text-slate-500 mt-0.5">
@@ -420,16 +420,16 @@ export function AdminSiswaAndUjian({
 
         {/* Ringkasan & Pilih Cepat Per Kelas */}
         {studentSummary.perKelas.length > 0 && (
-          <div className="bg-white border border-slate-200/80 shadow-2xs rounded-2xl p-3.5 sm:p-4 space-y-2.5">
+          <div className="bg-white border border-sky-100 shadow-2xs rounded-2xl p-3.5 sm:p-4 space-y-2.5">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-xs font-bold text-slate-800">
+              <div className="text-xs font-bold text-[#0F172A]">
                 Ringkasan Peserta Didik Per Kelas
               </div>
               {filterKelas && (
                 <button
                   type="button"
                   onClick={() => setFilterKelas('')}
-                  className="text-xs font-semibold text-blue-600 hover:underline cursor-pointer"
+                  className="text-xs font-semibold text-sky-600 hover:underline cursor-pointer"
                 >
                   Tampilkan Semua Kelas
                 </button>
@@ -441,11 +441,11 @@ export function AdminSiswaAndUjian({
                 onClick={() => setFilterKelas('')}
                 className={`text-left rounded-xl border p-2.5 transition-all cursor-pointer ${
                   filterKelas === ''
-                    ? 'bg-sky-50/90 border-sky-300 ring-1 ring-sky-300/60'
-                    : 'bg-slate-50/60 border-slate-200/80 hover:bg-slate-50'
+                    ? 'bg-sky-50/95 border-sky-400 ring-1 ring-sky-400/25'
+                    : 'bg-[#F2F8FF] border-sky-200/70 hover:bg-[#E6F2FF]'
                 }`}
               >
-                <div className="text-xs font-bold text-slate-900">Semua Kelas</div>
+                <div className="text-xs font-bold text-[#0F172A]">Semua Kelas</div>
                 <div className="text-[11px] font-mono tabular-nums text-slate-600 mt-0.5">
                   {studentSummary.total} siswa
                 </div>
@@ -461,15 +461,15 @@ export function AdminSiswaAndUjian({
                     }
                     className={`text-left rounded-xl border p-2.5 transition-all cursor-pointer ${
                       selected
-                        ? 'bg-sky-50/90 border-sky-300 ring-1 ring-sky-300/60'
-                        : 'bg-slate-50/60 border-slate-200/80 hover:bg-slate-50'
+                        ? 'bg-sky-50/95 border-sky-400 ring-1 ring-sky-400/25'
+                        : 'bg-[#F2F8FF] border-sky-200/70 hover:bg-[#E6F2FF]'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-1">
-                      <span className="text-xs font-bold text-slate-900 truncate">
+                      <span className="text-xs font-bold text-[#0F172A] truncate">
                         Kelas {item.kelas}
                       </span>
-                      <span className="text-[11px] font-mono font-bold text-sky-700 tabular-nums">
+                      <span className="text-[11px] font-mono font-bold text-sky-600 tabular-nums">
                         {item.total}
                       </span>
                     </div>
@@ -484,15 +484,15 @@ export function AdminSiswaAndUjian({
         )}
 
         {/* Filter Bar & Mode Tampilan */}
-        <div className="bg-white border border-slate-200/80 shadow-2xs rounded-2xl p-3 sm:p-3.5 flex flex-col lg:flex-row lg:items-center gap-2.5">
-          <div className="grid grid-cols-2 sm:inline-flex bg-slate-100/90 p-1 rounded-xl shrink-0">
+        <div className="bg-white border border-sky-100 shadow-2xs rounded-2xl p-3 sm:p-3.5 flex flex-col lg:flex-row lg:items-center gap-2.5">
+          <div className="grid grid-cols-2 sm:inline-flex bg-[#F2F8FF] p-1 rounded-xl shrink-0">
             <button
               type="button"
               onClick={() => setViewMode('per_kelas')}
               className={`min-h-[36px] px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 viewMode === 'per_kelas'
-                  ? 'bg-white text-slate-900 shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white text-[#0F172A] shadow-2xs'
+                  : 'text-slate-600 hover:text-[#0F172A]'
               }`}
             >
               <Layers className="w-3.5 h-3.5" />
@@ -503,8 +503,8 @@ export function AdminSiswaAndUjian({
               onClick={() => setViewMode('semua')}
               className={`min-h-[36px] px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 viewMode === 'semua'
-                  ? 'bg-white text-slate-900 shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white text-[#0F172A] shadow-2xs'
+                  : 'text-slate-600 hover:text-[#0F172A]'
               }`}
             >
               <List className="w-3.5 h-3.5" />
@@ -516,7 +516,7 @@ export function AdminSiswaAndUjian({
             <select
               value={filterKelas}
               onChange={(e) => setFilterKelas(e.target.value)}
-              className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              className="min-h-[40px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
             >
               <option value="">Semua Kelas</option>
               {kelasList.map((k) => (
@@ -528,7 +528,7 @@ export function AdminSiswaAndUjian({
             <select
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
-              className="min-h-[40px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              className="min-h-[40px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
             >
               <option value="">Semua Status Akun</option>
               <option value="Aktif">Aktif</option>
@@ -541,7 +541,7 @@ export function AdminSiswaAndUjian({
                 value={searchQ}
                 onChange={(e) => setSearchQ(e.target.value)}
                 placeholder="Cari nama siswa..."
-                className="w-full min-h-[40px] pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                className="w-full min-h-[40px] pl-9 pr-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
               />
             </div>
           </div>
@@ -555,19 +555,19 @@ export function AdminSiswaAndUjian({
               return (
                 <div
                   key={grp.kelasName}
-                  className="bg-white border border-slate-200/80 shadow-2xs rounded-2xl overflow-hidden"
+                  className="bg-white border border-sky-100 shadow-2xs rounded-2xl overflow-hidden"
                 >
                   <button
                     type="button"
                     onClick={() => toggleKelasCollapse(grp.kelasName)}
-                    className="w-full px-4 py-3 bg-slate-50/80 hover:bg-slate-100/70 border-b border-slate-100 flex items-center justify-between gap-3 text-left transition-colors cursor-pointer"
+                    className="w-full px-4 py-3 bg-[#F2F8FF] hover:bg-[#E6F2FF] border-b border-sky-100 flex items-center justify-between gap-3 text-left transition-colors cursor-pointer"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <span className="w-8 h-8 rounded-xl bg-sky-100/80 text-sky-700 font-bold text-xs flex items-center justify-center shrink-0">
                         {grp.kelasName.slice(0, 3)}
                       </span>
                       <div className="min-w-0">
-                        <div className="font-bold text-sm text-slate-900">
+                        <div className="font-bold text-sm text-[#0F172A]">
                           Kelas {grp.kelasName}
                         </div>
                         <div className="text-[11px] text-slate-500">
@@ -697,7 +697,7 @@ export function AdminSiswaAndUjian({
                   required
                   value={namaSiswa}
                   onChange={(e) => setNamaSiswa(e.target.value)}
-                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                 />
               </div>
               <div>
@@ -708,7 +708,7 @@ export function AdminSiswaAndUjian({
                   value={kelas}
                   onChange={(e) => setKelas(e.target.value)}
                   placeholder="Contoh: 6A"
-                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                 />
               </div>
               <div>
@@ -716,7 +716,7 @@ export function AdminSiswaAndUjian({
                 <select
                   value={statusAkun}
                   onChange={(e) => setStatusAkun(e.target.value as 'Aktif' | 'Nonaktif')}
-                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                 >
                   <option value="Aktif">Aktif</option>
                   <option value="Nonaktif">Nonaktif</option>
@@ -733,7 +733,7 @@ export function AdminSiswaAndUjian({
                 <button
                   type="submit"
                   disabled={saving}
-                  className="flex-1 min-h-[44px] py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition-colors cursor-pointer"
+                  className="flex-1 min-h-[44px] py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold transition-colors cursor-pointer"
                 >
                   {saving ? 'Menyimpan...' : 'Simpan'}
                 </button>
@@ -885,7 +885,7 @@ export function AdminSiswaAndUjian({
                         statusLabel === 'Selesai'
                           ? 'text-emerald-600'
                           : statusLabel === 'Sedang Ujian'
-                          ? 'text-blue-600'
+                          ? 'text-sky-600'
                           : 'text-slate-400'
                       }`}
                     >
@@ -974,7 +974,7 @@ export function AdminSiswaAndUjian({
                           statusLabel === 'Selesai'
                             ? 'text-emerald-600'
                             : statusLabel === 'Sedang Ujian'
-                            ? 'text-blue-600'
+                            ? 'text-sky-600'
                             : 'text-slate-400'
                         }`}
                       >

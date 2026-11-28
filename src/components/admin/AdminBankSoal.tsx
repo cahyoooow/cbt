@@ -478,7 +478,7 @@ export function AdminBankSoal({ settings, pakets, soals, onRefresh, onToast }: P
       <div className="flex flex-col gap-3 no-print">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
           <div>
-            <h1 className="text-lg sm:text-xl font-bold text-slate-900">Bank Soal</h1>
+            <h1 className="text-lg sm:text-xl font-bold text-[#0F172A]">Bank Soal</h1>
             <p className="text-xs text-slate-500 mt-0.5">
               {activePaket
                 ? `${activePaket.nama_paket_soal} · ${paketSoals.length} butir soal · Total bobot ${totalBobot}`
@@ -506,13 +506,13 @@ export function AdminBankSoal({ settings, pakets, soals, onRefresh, onToast }: P
           <button
             type="button"
             onClick={() => openSoalForm()}
-            className="min-h-[42px] sm:min-h-[36px] px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-blue-600/20"
+            className="min-h-[42px] sm:min-h-[36px] px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-sky-500/20"
           >
             <Plus className="w-4 h-4" strokeWidth={2} />
             Tambah Soal
           </button>
 
-          <label className="min-h-[42px] sm:min-h-[36px] px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-emerald-600/20">
+          <label className="min-h-[42px] sm:min-h-[36px] px-3.5 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-emerald-900/10">
             <Upload className="w-4 h-4" strokeWidth={1.85} />
             Impor Excel
             <input type="file" accept=".xlsx,.csv" className="hidden" onChange={handleImportExcel} />
@@ -527,7 +527,7 @@ export function AdminBankSoal({ settings, pakets, soals, onRefresh, onToast }: P
               }
               setWordModalOpen(true);
             }}
-            className="min-h-[42px] sm:min-h-[36px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs shadow-indigo-600/20"
+            className="min-h-[42px] sm:min-h-[36px] px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer shadow-xs"
           >
             <FileUp className="w-4 h-4" strokeWidth={1.85} />
             Impor Word
@@ -948,7 +948,7 @@ export function AdminBankSoal({ settings, pakets, soals, onRefresh, onToast }: P
                         <label className="text-xs font-semibold text-slate-700">
                           {jenis === 'PGK Kategori' ? `Pernyataan ${lbl}` : `Pilihan ${lbl}`}
                         </label>
-                        <label className="text-[11px] text-blue-600 hover:underline cursor-pointer">
+                        <label className="text-[11px] text-sky-600 hover:underline cursor-pointer">
                           + Gambar
                           <input
                             type="file"
@@ -1043,7 +1043,7 @@ export function AdminBankSoal({ settings, pakets, soals, onRefresh, onToast }: P
                             setTkaIndikator(cls.indikator);
                             onToast(`Terdeteksi: ${cls.elemen} — ${cls.subelemen}`, 'ok');
                           }}
-                          className="min-h-[34px] px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                          className="min-h-[34px] px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
                         >
                           <Sparkles className="w-3 h-3" />
                           Deteksi Otomatis TKA
@@ -1200,7 +1200,7 @@ export function AdminBankSoal({ settings, pakets, soals, onRefresh, onToast }: P
               <button
                 type="submit"
                 disabled={saving}
-                className="flex-1 min-h-[44px] py-2 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold cursor-pointer"
+                className="flex-1 min-h-[44px] py-2 px-4 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-60 text-white text-sm font-semibold cursor-pointer transition-colors"
               >
                 {saving ? 'Menyimpan...' : 'Simpan Soal'}
               </button>

@@ -1,22 +1,31 @@
 import React, { useState } from 'react';
 import {
   Building2,
+  CheckCircle2,
   ClipboardList,
+  CloudDownload,
   Database,
   KeyRound,
+  Link2,
   Plus,
+  RotateCcw,
   Save,
   Trash2,
-  UploadCloud,
 } from 'lucide-react';
 import {
   addAdminPasscode,
   deleteAdminPasscode,
-  migrateFromLegacyGas,
+  getPengaturan,
   savePengaturan,
   saveTataTertibList,
   seedSampleDatabase,
 } from '../../services/cbtService';
+import {
+  DEFAULT_GAS_URL,
+  getGasUrl,
+  setGasUrl as persistGasUrl,
+  testGasConnection,
+} from '../../services/gasClient';
 import type { AdminPassLabel, Pengaturan, TataTertib } from '../../types/cbt';
 import { compressImageToDataUrl } from '../../utils/mathFormat';
 
@@ -56,26 +65,21 @@ export function AdminSettingsAndMigration({
   const [logo, setLogo] = useState(settings.logo);
   const [savingCfg, setSavingCfg] = useState(false);
 
-  // Legacy GAS migration tool
-  const [gasUrl, setGasUrl] = useState(() => {
-    try {
-      return (
-        localStorage.getItem('cbt_legacy_gas_url') ||
-        'https://script.google.com/macros/s/AKfycbwCLsMHzKd_wqwLX-5w71sKtmubFHSxAgcr1Bdlcr-IESMcl21QBlKyBoI3L0df3a1X/exec'
-      );
-    } catch {
-      return 'https://script.google.com/macros/s/AKfycbwCLsMHzKd_wqwLX-5w71sKtmubFHSxAgcr1Bdlcr-IESMcl21QBlKyBoI3L0df3a1X/exec';
-    }
-  });
-  const [gasPw, setGasPw] = useState('');
-  const [migrating, setMigrating] = useState(false);
-  const [migLog, setMigLog] = useState('');
+  // Apps Script Web App URL configuration
+  const [gasUrl, setGasUrl] = useState(() => getGasUrl());
+  const [testingConn, setTestingConn] = useState(false);
+  const [connLog, setConnLog] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  // On-demand Firebase -> Spreadsheet sync
+  const [syncingFb, setSyncingFb] = useState(false);
+  const [fbSyncStatus, setFbSyncStatus] = useState('');
+  const [fbSyncResult, setFbSyncResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
   if (tab === 'akun') {
     return (
       <div className="space-y-5 sm:space-y-6">
         <div>
-          <h1 className="text-lg sm:text-xl font-bold text-slate-900">
+          <h1 className="text-lg sm:text-xl font-bold text-[#0F172A]">
             Password Admin &amp; Tata Tertib
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -85,12 +89,12 @@ export function AdminSettingsAndMigration({
 
         <div className="grid lg:grid-cols-2 gap-5 sm:gap-6 items-start">
           {/* Admin Passcodes */}
-          <div className="bg-white border border-slate-200/80 shadow-2xs rounded-2xl p-4 sm:p-5 space-y-4">
+          <div className="bg-white border border-sky-100 shadow-2xs rounded-2xl p-4 sm:p-5 space-y-4">
             <div className="flex items-center gap-2.5">
-              <span className="w-8 h-8 rounded-xl bg-sky-50 border border-sky-200/70 text-sky-600 flex items-center justify-center shrink-0">
+              <span className="w-8 h-8 rounded-xl bg-sky-50 border border-sky-200/80 text-sky-600 flex items-center justify-center shrink-0">
                 <KeyRound className="w-4 h-4" strokeWidth={1.85} />
               </span>
-              <h2 className="font-bold text-sm text-slate-800">Kelola Password Admin</h2>
+              <h2 className="font-bold text-sm text-[#0F172A]">Kelola Password Admin</h2>
             </div>
 
             <form
@@ -120,7 +124,7 @@ export function AdminSettingsAndMigration({
                 value={newLabel}
                 onChange={(e) => setNewLabel(e.target.value)}
                 placeholder="Label (mis: Pengawas / Cadangan)"
-                className="sm:col-span-5 min-h-[42px] sm:min-h-[38px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                className="sm:col-span-5 min-h-[42px] sm:min-h-[38px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-xs focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
               />
               <input
                 type="password"
@@ -128,12 +132,12 @@ export function AdminSettingsAndMigration({
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder="Password baru"
-                className="sm:col-span-4 min-h-[42px] sm:min-h-[38px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                className="sm:col-span-4 min-h-[42px] sm:min-h-[38px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-xs focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
               />
               <button
                 type="submit"
                 disabled={savingPass}
-                className="sm:col-span-3 min-h-[42px] sm:min-h-[38px] px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                className="sm:col-span-3 min-h-[42px] sm:min-h-[38px] px-3 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center justify-center gap-1 transition-colors cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
                 {savingPass ? '...' : 'Tambah'}
@@ -149,7 +153,7 @@ export function AdminSettingsAndMigration({
                   <div className="min-w-0">
                     <div className="font-semibold text-slate-800 truncate">{p.label}</div>
                     <div className="text-slate-400 mt-0.5">
-                      Password terenkripsi aktif
+                      Password admin Spreadsheet aktif
                       {p.created_at ? ` · ${p.created_at.toLocaleDateString('id-ID')}` : ''}
                     </div>
                   </div>
@@ -187,23 +191,28 @@ export function AdminSettingsAndMigration({
           </div>
 
           {/* Tata Tertib */}
-          <div className="bg-white border border-slate-200/80 shadow-2xs rounded-2xl p-4 sm:p-5 space-y-4">
+          <div className="bg-white border border-sky-100 shadow-2xs rounded-2xl p-4 sm:p-5 space-y-4">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2.5">
-                <span className="w-8 h-8 rounded-xl bg-indigo-50 border border-indigo-200/70 text-indigo-600 flex items-center justify-center shrink-0">
+                <span className="w-8 h-8 rounded-xl bg-sky-50 border border-sky-200/80 text-sky-600 flex items-center justify-center shrink-0">
                   <ClipboardList className="w-4 h-4" strokeWidth={1.85} />
                 </span>
-                <h2 className="font-bold text-sm text-slate-800">Tata Tertib Ujian</h2>
+                <h2 className="font-bold text-sm text-[#0F172A]">Tata Tertib Ujian</h2>
               </div>
               <button
                 type="button"
                 onClick={() => setTibDrafts((d) => [...d, ''])}
-                className="min-h-[38px] px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1 transition-colors cursor-pointer"
+                className="min-h-[38px] px-3 py-1.5 rounded-xl border border-sky-200/80 text-xs font-semibold text-slate-700 hover:bg-[#F2F8FF] inline-flex items-center gap-1 transition-colors cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
                 Tambah Butir
               </button>
             </div>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Saat siswa login, daftar tata tertib utama diambil dari sheet{' '}
+              <code>Tata_Tertib</code> di Spreadsheet. Perubahan di sini tersimpan di pratinjau
+              perangkat ini.
+            </p>
 
             <div className="space-y-2">
               {tibDrafts.map((teks, idx) => (
@@ -219,7 +228,7 @@ export function AdminSettingsAndMigration({
                       next[idx] = e.target.value;
                       setTibDrafts(next);
                     }}
-                    className="flex-1 min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    className="flex-1 min-h-[40px] px-3 py-1.5 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-xs focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
                   />
                   <button
                     type="button"
@@ -249,7 +258,7 @@ export function AdminSettingsAndMigration({
                   setSavingTib(false);
                 }
               }}
-              className="w-full min-h-[44px] py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              className="w-full min-h-[44px] py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
             >
               <Save className="w-4 h-4" />
               {savingTib ? 'Menyimpan...' : 'Simpan Tata Tertib'}
@@ -260,16 +269,16 @@ export function AdminSettingsAndMigration({
     );
   }
 
-  // ===== TAB: PENGATURAN & MIGRASI =====
+  // ===== TAB: PENGATURAN & KONEKSI APPS SCRIPT =====
   return (
     <div className="space-y-5 sm:space-y-6">
       <div>
         <h1 className="text-lg sm:text-xl font-bold text-slate-900">
-          Pengaturan &amp; Migrasi Data
+          Pengaturan &amp; Koneksi Server
         </h1>
         <p className="text-xs text-slate-500 mt-0.5">
-          Sesuaikan identitas sekolah serta pindahkan data lama dari Apps Script/Spreadsheet ke
-          Firebase.
+          Sesuaikan identitas sekolah serta koneksi Google Apps Script (Spreadsheet) untuk
+          menyimpan seluruh data CBT.
         </p>
       </div>
 
@@ -299,10 +308,10 @@ export function AdminSettingsAndMigration({
           className="bg-white border border-slate-200/80 shadow-2xs rounded-2xl p-4 sm:p-5 space-y-4"
         >
           <div className="flex items-center gap-2.5">
-            <span className="w-8 h-8 rounded-xl bg-sky-50 border border-sky-200/70 text-sky-600 flex items-center justify-center shrink-0">
+            <span className="w-8 h-8 rounded-xl bg-sky-50 border border-sky-200/80 text-sky-600 flex items-center justify-center shrink-0">
               <Building2 className="w-4 h-4" strokeWidth={1.85} />
             </span>
-            <h2 className="font-bold text-sm text-slate-800">Identitas Portal Sekolah</h2>
+            <h2 className="font-bold text-sm text-[#0F172A]">Identitas Portal Sekolah</h2>
           </div>
 
           <div>
@@ -314,7 +323,7 @@ export function AdminSettingsAndMigration({
               required
               value={judul}
               onChange={(e) => setJudul(e.target.value)}
-              className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
             />
           </div>
 
@@ -324,7 +333,7 @@ export function AdminSettingsAndMigration({
               type="text"
               value={subjudul}
               onChange={(e) => setSubjudul(e.target.value)}
-              className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
             />
           </div>
 
@@ -335,7 +344,7 @@ export function AdminSettingsAndMigration({
                 type="text"
                 value={judulAdmin}
                 onChange={(e) => setJudulAdmin(e.target.value)}
-                className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
               />
             </div>
             <div>
@@ -346,7 +355,7 @@ export function AdminSettingsAndMigration({
                 type="text"
                 value={subjudulAdmin}
                 onChange={(e) => setSubjudulAdmin(e.target.value)}
-                className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
               />
             </div>
           </div>
@@ -359,9 +368,9 @@ export function AdminSettingsAndMigration({
                 value={logo}
                 onChange={(e) => setLogo(e.target.value)}
                 placeholder="URL logo atau unggah gambar..."
-                className="flex-1 min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                className="flex-1 min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-xs focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
               />
-              <label className="min-h-[42px] px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-semibold inline-flex items-center cursor-pointer whitespace-nowrap transition-colors">
+              <label className="min-h-[42px] px-3.5 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] hover:bg-[#E6F2FF] text-xs font-semibold inline-flex items-center cursor-pointer whitespace-nowrap transition-colors">
                 Unggah
                 <input
                   type="file"
@@ -381,28 +390,34 @@ export function AdminSettingsAndMigration({
           <button
             type="submit"
             disabled={savingCfg}
-            className="w-full min-h-[44px] py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            className="w-full min-h-[44px] py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
           >
             <Save className="w-4 h-4" />
             {savingCfg ? 'Menyimpan...' : 'Simpan Pengaturan'}
           </button>
         </form>
 
-        {/* 1-Click Migration from Google Apps Script */}
+        {/* Apps Script Connection Config */}
         <div className="space-y-4">
-          <div className="bg-white border border-slate-200/80 shadow-2xs rounded-2xl p-4 sm:p-5 space-y-4">
+          <div className="bg-white border border-sky-100 shadow-2xs rounded-2xl p-4 sm:p-5 space-y-4">
             <div className="flex items-center gap-2.5">
-              <span className="w-8 h-8 rounded-xl bg-indigo-50 border border-indigo-200/70 text-indigo-600 flex items-center justify-center shrink-0">
-                <UploadCloud className="w-4 h-4" strokeWidth={1.85} />
+              <span className="w-8 h-8 rounded-xl bg-emerald-50 border border-emerald-200/70 text-emerald-700 flex items-center justify-center shrink-0">
+                <Link2 className="w-4 h-4" strokeWidth={1.85} />
               </span>
-              <h2 className="font-bold text-sm text-slate-800">
-                Migrasi Otomatis dari Apps Script / Spreadsheet Lama
-              </h2>
+              <div>
+                <h2 className="font-bold text-sm text-[#0F172A]">
+                  Koneksi Google Apps Script (Spreadsheet)
+                </h2>
+                <p className="text-[11px] text-slate-500">
+                  Penyimpanan utama seluruh paket soal, siswa, jawaban, hasil, dan pelanggaran.
+                </p>
+              </div>
             </div>
+
             <p className="text-xs text-slate-600 leading-relaxed">
-              Masukkan URL Web App Apps Script (<code>/exec</code>) dan Password Admin lama Anda.
-              Alat ini akan menyalin Pengaturan, Paket Soal, Bank Soal, Master Siswa, Hasil Ujian,
-              dan Log Pelanggaran dari Spreadsheet ke Firebase Firestore dalam satu kali proses.
+              Aplikasi terhubung langsung ke Web App Google Apps Script (<code>/exec</code>) sehingga
+              database Google Spreadsheet lama tetap utuh tanpa batas kuota harian. Pastikan Web App
+              di-deploy dengan akses <strong>&quot;Anyone&quot;</strong>.
             </p>
 
             <div>
@@ -412,75 +427,164 @@ export function AdminSettingsAndMigration({
               <input
                 type="url"
                 value={gasUrl}
-                onChange={(e) => setGasUrl(e.target.value)}
-                className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                onChange={(e) => {
+                  setGasUrl(e.target.value);
+                  setConnLog(null);
+                }}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-sky-200/80 bg-[#F4F9FF] focus:bg-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
               />
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Password Admin Apps Script Lama
-              </label>
-              <input
-                type="password"
-                value={gasPw}
-                onChange={(e) => setGasPw(e.target.value)}
-                placeholder="Masukkan password admin lama"
-                className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-              />
+            {connLog && (
+              <div
+                className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
+                  connLog.ok
+                    ? 'bg-emerald-50 border-emerald-200/80 text-emerald-800'
+                    : 'bg-rose-50 border-rose-200/80 text-rose-800'
+                }`}
+              >
+                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{connLog.msg}</span>
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row gap-2">
+              <button
+                type="button"
+                disabled={testingConn}
+                onClick={async () => {
+                  const target = gasUrl.trim();
+                  if (!target) {
+                    onToast('Masukkan URL Web App Apps Script (/exec).', 'err');
+                    return;
+                  }
+                  setTestingConn(true);
+                  setConnLog(null);
+                  try {
+                    const res = await testGasConnection(target);
+                    if (!res.ok) {
+                      const errMsg = res.error || 'Gagal terhubung ke Apps Script.';
+                      setConnLog({ ok: false, msg: errMsg });
+                      onToast(errMsg, 'err');
+                      return;
+                    }
+                    persistGasUrl(target);
+                    const cfgUpdated = await getPengaturan(true);
+                    onSettingsUpdated(cfgUpdated);
+                    setJudul(cfgUpdated.judul);
+                    setSubjudul(cfgUpdated.subjudul);
+                    setJudulAdmin(cfgUpdated.judul_admin);
+                    setSubjudulAdmin(cfgUpdated.subjudul_admin);
+                    setLogo(cfgUpdated.logo);
+                    await onRefresh();
+                    setConnLog({
+                      ok: true,
+                      msg: 'Terhubung ke Google Apps Script & Spreadsheet! Data berhasil dimuat.',
+                    });
+                    onToast('Koneksi Apps Script berhasil disimpan & diuji.', 'ok');
+                  } catch (err) {
+                    const m =
+                      err instanceof Error ? err.message : 'Gagal menguji koneksi Apps Script.';
+                    setConnLog({ ok: false, msg: m });
+                    onToast(m, 'err');
+                  } finally {
+                    setTestingConn(false);
+                  }
+                }}
+                className="flex-1 min-h-[44px] py-2.5 px-4 rounded-xl bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                {testingConn ? 'Menguji Koneksi...' : 'Simpan & Uji Koneksi'}
+              </button>
+
+              <button
+                type="button"
+                disabled={testingConn}
+                onClick={() => {
+                  setGasUrl(DEFAULT_GAS_URL);
+                  persistGasUrl(DEFAULT_GAS_URL);
+                  setConnLog({
+                    ok: true,
+                    msg: 'URL dikembalikan ke Web App Apps Script default.',
+                  });
+                  onToast('URL Apps Script dikembalikan ke default.', 'ok');
+                }}
+                className="min-h-[44px] px-3.5 py-2 rounded-xl border border-sky-200/80 bg-white hover:bg-[#F2F8FF] text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Reset Default
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-white border border-sky-100 shadow-2xs rounded-2xl p-4 sm:p-5 space-y-3.5">
+            <div className="flex items-start gap-2.5">
+              <span className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-200/70 text-amber-600 flex items-center justify-center shrink-0 mt-0.5">
+                <CloudDownload className="w-4 h-4" strokeWidth={1.85} />
+              </span>
+              <div>
+                <h3 className="font-bold text-sm text-[#0F172A]">
+                  Tarik Data Terbaru dari Firebase ke Spreadsheet
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                  Gunakan jika Anda sempat menambahkan paket, soal Word/gambar, siswa, nilai, atau
+                  pelanggaran di penyimpanan Firebase dan ingin menyalinnya masuk ke Google
+                  Spreadsheet tanpa menghapus data lama.
+                </p>
+              </div>
             </div>
 
-            {migLog && (
-              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-700">
-                {migLog}
+            {fbSyncResult && (
+              <div
+                className={`p-3 rounded-xl border text-xs leading-relaxed ${
+                  fbSyncResult.ok
+                    ? 'bg-emerald-50 border-emerald-200/80 text-emerald-800'
+                    : 'bg-rose-50 border-rose-200/80 text-rose-800'
+                }`}
+              >
+                {fbSyncResult.msg}
               </div>
             )}
 
             <button
               type="button"
-              disabled={migrating}
+              disabled={syncingFb || testingConn}
               onClick={async () => {
-                if (!gasUrl.trim() || !gasPw) {
-                  onToast('Isi URL Web App dan password admin lama terlebih dahulu.', 'err');
-                  return;
-                }
-                setMigrating(true);
-                setMigLog('Memulai proses migrasi...');
+                setSyncingFb(true);
+                setFbSyncResult(null);
+                setFbSyncStatus('Menyiapkan koneksi Firebase...');
                 try {
-                  try {
-                    localStorage.setItem('cbt_legacy_gas_url', gasUrl.trim());
-                  } catch {
-                    // ignore storage quota errors
-                  }
-                  const res = await migrateFromLegacyGas(gasUrl, gasPw, (m) => setMigLog(m));
-                  await onRefresh();
-                  const cfgUpdated = await (
-                    await import('../../services/cbtService')
-                  ).getPengaturan();
-                  onSettingsUpdated(cfgUpdated);
-                  setMigLog(
-                    `Migrasi selesai! ${res.paket} paket, ${res.soal} soal, ${res.siswa} siswa baru, ${res.hasil} hasil ujian, dan ${res.pelanggaran} log pelanggaran baru berhasil disalin.`
+                  const { syncLatestFirebaseToGas } = await import(
+                    '../../services/firebaseSyncService'
                   );
-                  onToast('Migrasi data dari Apps Script berhasil!', 'ok');
+                  const summary = await syncLatestFirebaseToGas((msg) => setFbSyncStatus(msg));
+                  await onRefresh();
+                  const msg = `Sinkronisasi selesai: ${summary.paket} paket, ${summary.soal} soal, ${summary.siswa} siswa baru, ${summary.hasil} hasil, dan ${summary.pelanggaran} log pelanggaran tersimpan ke Spreadsheet.`;
+                  setFbSyncResult({ ok: true, msg });
+                  onToast('Data terbaru dari Firebase berhasil disalin ke Spreadsheet.', 'ok');
                 } catch (err) {
-                  const m =
-                    err instanceof Error ? err.message : 'Gagal migrasi dari Apps Script.';
-                  setMigLog(`Gagal: ${m}`);
-                  onToast(m, 'err');
+                  const errMsg =
+                    err instanceof Error ? err.message : 'Gagal menarik data dari Firebase.';
+                  setFbSyncResult({ ok: false, msg: errMsg });
+                  onToast(errMsg, 'err');
                 } finally {
-                  setMigrating(false);
+                  setSyncingFb(false);
+                  setFbSyncStatus('');
                 }
               }}
-              className="w-full min-h-[44px] py-2.5 rounded-xl bg-slate-700 hover:bg-slate-800 disabled:opacity-60 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              className="w-full min-h-[44px] px-4 py-2.5 rounded-xl border border-amber-200 bg-amber-50 hover:bg-amber-100/80 disabled:opacity-60 text-amber-900 text-xs sm:text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
             >
-              <UploadCloud className="w-4 h-4" />
-              {migrating ? 'Sedang Memigrasikan...' : 'Mulai Migrasi ke Firebase'}
+              <CloudDownload className="w-4 h-4 shrink-0" />
+              {syncingFb
+                ? fbSyncStatus || 'Menyinkronkan ke Spreadsheet...'
+                : 'Login Google & Tarik Data dari Firebase'}
             </button>
           </div>
 
-          <div className="bg-white border border-slate-200/80 shadow-2xs rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="bg-white border border-sky-100 shadow-2xs rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h3 className="font-bold text-sm text-slate-800">Isi Data Contoh Awal</h3>
+              <h3 className="font-bold text-sm text-[#0F172A]">Isi Data Contoh Awal</h3>
               <p className="text-xs text-slate-500 mt-0.5">
                 Menambahkan contoh paket Matematika, IPA, 3 soal AKM/PGK, dan 3 siswa uji coba.
               </p>
@@ -492,7 +596,7 @@ export function AdminSettingsAndMigration({
                 await onRefresh();
                 onToast('Data contoh berhasil ditambahkan.', 'ok');
               }}
-              className="w-full sm:w-auto min-h-[42px] px-4 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0 transition-colors cursor-pointer"
+              className="w-full sm:w-auto min-h-[42px] px-4 py-2 rounded-xl border border-sky-200/80 bg-white hover:bg-[#F2F8FF] text-slate-800 text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0 transition-colors cursor-pointer"
             >
               <Database className="w-4 h-4 text-sky-600" />
               Isi Contoh

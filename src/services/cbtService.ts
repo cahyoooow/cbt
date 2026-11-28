@@ -1,26 +1,14 @@
-import { signInAnonymously, signOut, type User } from 'firebase/auth';
 import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  setDoc,
-  Timestamp,
-  updateDoc,
-  where,
-  writeBatch,
-  type Unsubscribe,
-} from 'firebase/firestore';
-import { auth, db, handleFirestoreError, OperationType } from '../firebase';
+  clearAdminSessionPw,
+  callGas,
+  callGasAdmin,
+  getAdminSessionPw,
+  setAdminSessionPw,
+  uploadDataUrlFieldToGas,
+} from './gasClient';
 import type {
   ActiveStudentSession,
   AdminPassLabel,
-  AdminUser,
   AnswerValue,
   ExamSubmitResult,
   HasilUjian,
@@ -29,15 +17,12 @@ import type {
   Pengaturan,
   ProgresUjian,
   Siswa,
-  SoalKunci,
   SoalLengkap,
   SoalPublik,
   TataTertib,
 } from '../types/cbt';
 import {
-  calculateExamScore,
   generateRandomToken,
-  safeDocId,
   slugifyName,
 } from '../utils/mathFormat';
 
@@ -57,6 +42,116 @@ export const DEFAULT_TATA_TERTIB: string[] = [
   'Pelanggaran tercatat otomatis dan dilaporkan ke guru.',
   'Ujian terkirim otomatis saat waktu habis.',
 ];
+
+const LS_PAKET_PREFS = 'cbt_paket_prefs';
+const LS_TKA_OVERRIDES = 'cbt_tka_overrides';
+const LS_TATA_TERTIB = 'cbt_tata_tertib';
+const LS_PENGATURAN_CACHE = 'cbt_pengaturan_cache';
+const LS_SOAL_CACHE_PREFIX = 'cbt_qs_cache_';
+
+const PENGATURAN_CACHE_TTL_MS = 5 * 60 * 1000;
+const SOAL_CACHE_TTL_MS = 20 * 60 * 1000;
+
+// In-memory sheet row caches (updated on every list call)
+const paketRowById = new Map<string, number>();
+const paketNameById = new Map<string, string>();
+const soalRowById = new Map<string, number>();
+const soalRawById = new Map<string, Record<string, unknown>>();
+const siswaRowById = new Map<string, number>();
+const siswaNameById = new Map<string, string>();
+const logMetaById = new Map<
+  string,
+  { row: number; nama: string; raw: Record<string, unknown> }
+>();
+
+// Short-TTL shared memory cache + in-flight request coalescing to avoid redundant server hits
+interface TimedCacheEntry<T> {
+  ts: number;
+  data: T;
+}
+const memCache = new Map<string, TimedCacheEntry<unknown>>();
+const inFlightCache = new Map<string, Promise<unknown>>();
+
+async function withSharedCache<T>(
+  key: string,
+  ttlMs: number,
+  fetcher: () => Promise<T>
+): Promise<T> {
+  const cached = memCache.get(key) as TimedCacheEntry<T> | undefined;
+  if (cached && Date.now() - cached.ts < ttlMs) {
+    return cached.data;
+  }
+  const existingFlight = inFlightCache.get(key) as Promise<T> | undefined;
+  if (existingFlight) {
+    return existingFlight;
+  }
+  const promise = fetcher()
+    .then((data) => {
+      memCache.set(key, { ts: Date.now(), data });
+      return data;
+    })
+    .finally(() => {
+      inFlightCache.delete(key);
+    });
+  inFlightCache.set(key, promise);
+  return promise;
+}
+
+export function invalidateAdminCaches(keys?: string[]): void {
+  if (!keys || keys.length === 0) {
+    memCache.clear();
+    return;
+  }
+  keys.forEach((k) => memCache.delete(k));
+}
+
+interface PaketPrefs {
+  tampilkan_nilai?: boolean;
+  acak_soal?: boolean;
+}
+
+interface TkaOverride {
+  tka_mapel: string;
+  tka_elemen: string;
+  tka_subelemen: string;
+  tka_indikator: string;
+}
+
+function readJsonStorage<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonStorage(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function makePaketId(namaPaket: string): string {
+  return `pkt_${slugifyName(namaPaket)}`;
+}
+
+function getPaketPrefsMap(): Record<string, PaketPrefs> {
+  return readJsonStorage<Record<string, PaketPrefs>>(LS_PAKET_PREFS, {});
+}
+
+function savePaketPrefs(paketId: string, prefs: PaketPrefs): void {
+  const all = getPaketPrefsMap();
+  all[paketId] = prefs;
+  writeJsonStorage(LS_PAKET_PREFS, all);
+}
+
+function getTkaOverridesMap(): Record<string, TkaOverride> {
+  return readJsonStorage<Record<string, TkaOverride>>(LS_TKA_OVERRIDES, {});
+}
 
 // Deterministic Fisher-Yates shuffle when acak_soal is enabled
 function seededShuffle<T>(items: T[], seedStr: string): T[] {
@@ -79,1944 +174,19 @@ function seededShuffle<T>(items: T[], seedStr: string): T[] {
   return arr;
 }
 
-function isWithinWindow(p: Pick<PaketUjian, 'waktu_mulai' | 'waktu_berakhir'>): boolean {
-  const now = Date.now();
-  const parseDt = (s: string) => {
-    if (!s || !s.trim()) return null;
-    const norm = s.trim().replace(' ', 'T');
-    const ms = Date.parse(norm);
-    return Number.isNaN(ms) ? null : ms;
-  };
-  const start = parseDt(p.waktu_mulai);
-  const end = parseDt(p.waktu_berakhir);
-  if (start !== null && now < start) return false;
-  if (end !== null && now > end) return false;
-  return true;
-}
-
-export async function getPengaturan(): Promise<Pengaturan> {
-  const path = 'pengaturan/global';
-  try {
-    const snap = await getDoc(doc(db, 'pengaturan', 'global'));
-    if (!snap.exists()) return DEFAULT_PENGATURAN;
-    const d = snap.data();
-    return {
-      judul: String(d.judul || DEFAULT_PENGATURAN.judul),
-      subjudul: d.subjudul != null ? String(d.subjudul) : DEFAULT_PENGATURAN.subjudul,
-      judul_admin: d.judul_admin != null ? String(d.judul_admin) : DEFAULT_PENGATURAN.judul_admin,
-      subjudul_admin: d.subjudul_admin != null ? String(d.subjudul_admin) : DEFAULT_PENGATURAN.subjudul_admin,
-      logo: d.logo ? String(d.logo) : DEFAULT_PENGATURAN.logo,
-    };
-  } catch (err) {
-    console.warn('Fallback ke pengaturan default:', err);
-    return DEFAULT_PENGATURAN;
-  }
-}
-
-export async function savePengaturan(cfg: Pengaturan): Promise<void> {
-  const path = 'pengaturan/global';
-  try {
-    await setDoc(doc(db, 'pengaturan', 'global'), {
-      judul: cfg.judul.trim() || DEFAULT_PENGATURAN.judul,
-      subjudul: cfg.subjudul ?? '',
-      judul_admin: cfg.judul_admin ?? 'Admin CBT',
-      subjudul_admin: cfg.subjudul_admin ?? '',
-      logo: cfg.logo ?? '',
-      updated_at: serverTimestamp(),
-    });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, path);
-  }
-}
-
-export async function getTataTertib(): Promise<TataTertib[]> {
-  const path = 'tata_tertib';
-  try {
-    const q = query(collection(db, 'tata_tertib'), where('no', '>=', 1), orderBy('no', 'asc'));
-    const snap = await getDocs(q);
-    if (snap.empty) {
-      return DEFAULT_TATA_TERTIB.map((teks, idx) => ({
-        id: `tib_${idx + 1}`,
-        no: idx + 1,
-        teks,
-      }));
-    }
-    return snap.docs.map((d) => ({
-      id: d.id,
-      no: Number(d.data().no) || 1,
-      teks: String(d.data().teks || ''),
-    }));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, path);
-  }
-}
-
-export async function saveTataTertibList(items: { no: number; teks: string }[]): Promise<void> {
-  try {
-    const existing = await getDocs(collection(db, 'tata_tertib'));
-    const batch = writeBatch(db);
-    existing.docs.forEach((d) => batch.delete(d.ref));
-    items.forEach((item, idx) => {
-      const no = idx + 1;
-      const ref = doc(db, 'tata_tertib', `tib_${no}`);
-      batch.set(ref, {
-        no,
-        teks: item.teks.trim().slice(0, 500),
-        updated_at: serverTimestamp(),
-      });
-    });
-    await batch.commit();
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'tata_tertib');
-  }
-}
-
-// ===== Student Exam Flow =====
-
-export async function verifyStudentLogin(
-  namaInput: string,
-  tokenInput: string
-): Promise<{ ok: true; session: ActiveStudentSession } | { ok: false; msg: string }> {
-  const siswaId = slugifyName(namaInput);
-  const token = tokenInput.trim().toUpperCase();
-
-  if (!namaInput.trim()) return { ok: false, msg: 'Masukkan nama lengkap Anda.' };
-  if (!token) return { ok: false, msg: 'Masukkan token paket soal.' };
-
-  let siswaSnap;
-  try {
-    siswaSnap = await getDoc(doc(db, 'siswa', siswaId));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, `siswa/${siswaId}`);
-  }
-  if (!siswaSnap.exists()) {
-    return { ok: false, msg: 'Nama siswa tidak terdaftar. Pastikan ejaan sesuai daftar kelas.' };
-  }
-  const sd = siswaSnap.data();
-  const siswa: Siswa = {
-    id: siswaSnap.id,
-    nama_siswa: String(sd.nama_siswa),
-    nama_key: String(sd.nama_key),
-    kelas: String(sd.kelas),
-    status_ujian: String(sd.status_ujian || 'Belum'),
-    status_akun: sd.status_akun === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
-  };
-  if (siswa.status_akun !== 'Aktif') {
-    return { ok: false, msg: 'Akun Anda nonaktif. Hubungi guru/pengawas.' };
-  }
-
-  let tokSnap;
-  try {
-    tokSnap = await getDoc(doc(db, 'paket_tokens', token));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, `paket_tokens/${token}`);
-  }
-  if (!tokSnap.exists()) {
-    return { ok: false, msg: 'Token paket soal salah.' };
-  }
-  const td = tokSnap.data();
-  const paket: PaketUjian = {
-    id: String(td.paket_id),
-    nama_paket_soal: String(td.nama_paket_soal),
-    mata_pelajaran: String(td.mata_pelajaran),
-    durasi_menit: Number(td.durasi_menit) || 60,
-    status: td.status === 'Aktif' ? 'Aktif' : 'Nonaktif',
-    token_paket_soal: String(td.token_paket_soal),
-    waktu_mulai: String(td.waktu_mulai || ''),
-    waktu_berakhir: String(td.waktu_berakhir || ''),
-    tampilkan_nilai: td.tampilkan_nilai !== false,
-    acak_soal: td.acak_soal === true,
-  };
-
-  if (paket.status !== 'Aktif') {
-    return { ok: false, msg: 'Paket soal belum aktif.' };
-  }
-  if (!isWithinWindow(paket)) {
-    return { ok: false, msg: 'Ujian di luar jadwal yang ditentukan.' };
-  }
-
-  const compositeId = `${paket.id}__${siswa.id}`;
-  try {
-    const hasilSnap = await getDoc(doc(db, 'hasil', compositeId));
-    if (hasilSnap.exists()) {
-      return { ok: false, msg: 'Anda sudah menyelesaikan ujian ini.' };
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, `hasil/${compositeId}`);
-  }
-
-  const resume = siswa.status_ujian === `Sedang Ujian: ${paket.nama_paket_soal}`;
-  let progres: ProgresUjian | null = null;
-  try {
-    const progSnap = await getDoc(doc(db, 'progres', compositeId));
-    if (progSnap.exists() && resume) {
-      const pd = progSnap.data();
-      progres = {
-        id: progSnap.id,
-        paket_id: String(pd.paket_id),
-        paket_nama: String(pd.paket_nama),
-        siswa_id: String(pd.siswa_id),
-        nama_siswa: String(pd.nama_siswa),
-        kelas: String(pd.kelas),
-        jawaban: (pd.jawaban || {}) as Record<string, AnswerValue>,
-        ragu: (pd.ragu || {}) as Record<string, boolean>,
-        current_index: Number(pd.current_index) || 0,
-        sisa_detik: Number(pd.sisa_detik) || paket.durasi_menit * 60,
-        pelanggaran: Number(pd.pelanggaran) || 0,
-      };
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, `progres/${compositeId}`);
-  }
-
-  const tib = await getTataTertib();
-  return {
-    ok: true,
-    session: {
-      siswa,
-      paket,
-      tib,
-      resume,
-      progres,
-    },
-  };
-}
-
-export async function markStudentExamStarted(paket: PaketUjian, siswa: Siswa): Promise<void> {
-  const statusStr = `Sedang Ujian: ${paket.nama_paket_soal}`;
-  if (siswa.status_ujian === statusStr) return;
-  try {
-    await updateDoc(doc(db, 'siswa', siswa.id), {
-      status_ujian: statusStr,
-      updated_at: serverTimestamp(),
-    });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, `siswa/${siswa.id}`);
-  }
-}
-
-export async function getQuestionsForStudent(
-  paket: PaketUjian,
-  siswaKey: string
-): Promise<SoalPublik[]> {
-  const path = `soal?paket_id=${paket.id}`;
-  try {
-    const q = query(
-      collection(db, 'soal'),
-      where('paket_id', '==', paket.id),
-      where('aktif', '==', true)
-    );
-    const snap = await getDocs(q);
-    const list: SoalPublik[] = snap.docs
-      .map((d) => {
-        const x = d.data();
-        return {
-          id: d.id,
-          id_soal: String(x.id_soal || d.id),
-          paket_id: String(x.paket_id),
-          paket: String(x.paket),
-          nomor_soal: Number(x.nomor_soal) || 1,
-          jenis_soal: String(x.jenis_soal || 'PG'),
-          teks_stimulus: String(x.teks_stimulus || ''),
-          gambar_stimulus_url: String(x.gambar_stimulus_url || ''),
-          teks_soal: String(x.teks_soal || ''),
-          gambar_soal_url: String(x.gambar_soal_url || ''),
-          pilihan_a: String(x.pilihan_a || ''),
-          pilihan_b: String(x.pilihan_b || ''),
-          pilihan_c: String(x.pilihan_c || ''),
-          pilihan_d: String(x.pilihan_d || ''),
-          bobot: Number(x.bobot) || 1,
-          aktif: x.aktif === true,
-        };
-      })
-      .sort((a, b) => a.nomor_soal - b.nomor_soal);
-
-    if (list.length === 0) {
-      throw new Error(`Belum ada soal aktif untuk paket "${paket.nama_paket_soal}".`);
-    }
-    return paket.acak_soal ? seededShuffle(list, `${paket.id}_${siswaKey}`) : list;
-  } catch (err) {
-    if (err instanceof Error && err.message.startsWith('Belum ada soal')) throw err;
-    handleFirestoreError(err, OperationType.LIST, path);
-  }
-}
-
-export async function saveStudentProgress(params: {
-  paket: PaketUjian;
-  siswa: Siswa;
-  jawaban: Record<string, AnswerValue>;
-  ragu: Record<string, boolean>;
-  currentIndex: number;
-  sisaDetik: number;
-  pelanggaran: number;
-}): Promise<boolean> {
-  const { paket, siswa, jawaban, ragu, currentIndex, sisaDetik, pelanggaran } = params;
-  const docId = `${paket.id}__${siswa.id}`;
-
-  // Check if admin force-finished or reset this student
-  try {
-    const swSnap = await getDoc(doc(db, 'siswa', siswa.id));
-    if (!swSnap.exists()) return false;
-    const statusUjian = String(swSnap.data().status_ujian || '');
-    if (statusUjian !== `Sedang Ujian: ${paket.nama_paket_soal}`) {
-      return false;
-    }
-  } catch {
-    return true;
-  }
-
-  try {
-    await setDoc(doc(db, 'progres', docId), {
-      paket_id: paket.id,
-      paket_nama: paket.nama_paket_soal,
-      siswa_id: siswa.id,
-      nama_siswa: siswa.nama_siswa,
-      kelas: siswa.kelas,
-      jawaban,
-      ragu,
-      current_index: Math.max(0, Math.floor(currentIndex)),
-      sisa_detik: Math.max(0, Math.floor(sisaDetik)),
-      pelanggaran: Math.max(0, Math.floor(pelanggaran)),
-      updated_at: serverTimestamp(),
-    });
-    return true;
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `progres/${docId}`);
-  }
-}
-
-export async function logStudentViolation(params: {
-  siswa: Siswa;
-  paket: PaketUjian;
-  jenis: string;
-}): Promise<void> {
-  const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  try {
-    await setDoc(doc(db, 'pelanggaran', logId), {
-      siswa_id: params.siswa.id,
-      nama_siswa: params.siswa.nama_siswa,
-      kelas: params.siswa.kelas,
-      paket_id: params.paket.id,
-      paket_nama: params.paket.nama_paket_soal,
-      jenis_pelanggaran: params.jenis,
-      status_ujian: `Sedang Ujian: ${params.paket.nama_paket_soal}`,
-      created_at: serverTimestamp(),
-    });
-  } catch (err) {
-    console.warn('Gagal mencatat log pelanggaran:', err);
-  }
-}
-
-export async function submitStudentExam(params: {
-  paket: PaketUjian;
-  siswa: Siswa;
-  questions: SoalPublik[];
-  jawaban: Record<string, AnswerValue>;
-  pelanggaran: number;
-}): Promise<ExamSubmitResult> {
-  const { paket, siswa, questions, jawaban, pelanggaran } = params;
-  const docId = `${paket.id}__${siswa.id}`;
-
-  // Check if already submitted
-  try {
-    const existingHasil = await getDoc(doc(db, 'hasil', docId));
-    if (existingHasil.exists()) {
-      const d = existingHasil.data();
-      return {
-        nilai: Number(d.nilai_akhir) || 0,
-        benar: Number(d.total_benar) || 0,
-        salah: Number(d.total_salah) || 0,
-        tampilkan_nilai: paket.tampilkan_nilai,
-        rev: [],
-      };
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, `hasil/${docId}`);
-  }
-
-  let nilai = 0;
-  let benar = 0;
-  let salah = 0;
-  let statusPenilaian: 'dinilai' | 'menunggu' = 'menunggu';
-  let rev: ExamSubmitResult['rev'] = [];
-
-  if (paket.tampilkan_nilai) {
-    try {
-      const kq = query(
-        collection(db, 'soal_kunci'),
-        where('paket_id', '==', paket.id),
-        where('rilis_kunci', '==', true)
-      );
-      const kSnap = await getDocs(kq);
-      const kMap = new Map<string, SoalKunci>();
-      kSnap.docs.forEach((d) => {
-        const kd = d.data();
-        kMap.set(String(kd.id_soal || d.id), {
-          id: d.id,
-          id_soal: String(kd.id_soal || d.id),
-          paket_id: String(kd.paket_id),
-          kunci_jawaban: String(kd.kunci_jawaban || ''),
-          pembahasan: String(kd.pembahasan || ''),
-          bobot: Number(kd.bobot) || 1,
-          rilis_kunci: kd.rilis_kunci === true,
-        });
-      });
-
-      const fullQuestions: SoalLengkap[] = questions.map((q) => {
-        const k = kMap.get(q.id_soal);
-        return {
-          ...q,
-          kunci_jawaban: k?.kunci_jawaban || '',
-          pembahasan: k?.pembahasan || '',
-          rilis_kunci: k?.rilis_kunci ?? false,
-        };
-      });
-
-      const scored = calculateExamScore(fullQuestions, jawaban);
-      nilai = scored.nilai;
-      benar = scored.benar;
-      salah = scored.salah;
-      rev = scored.rev;
-      statusPenilaian = 'dinilai';
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, `soal_kunci?paket_id=${paket.id}`);
-    }
-  }
-
-  try {
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'hasil', docId), {
-      paket_id: paket.id,
-      paket: paket.nama_paket_soal,
-      siswa_id: siswa.id,
-      nama_siswa: siswa.nama_siswa,
-      kelas: siswa.kelas,
-      nilai_akhir: nilai,
-      total_benar: benar,
-      total_salah: salah,
-      pelanggaran_tab: Math.max(0, Math.floor(pelanggaran)),
-      detail_jawaban: jawaban,
-      status_penilaian: statusPenilaian,
-      created_at: serverTimestamp(),
-    });
-    batch.delete(doc(db, 'progres', docId));
-    batch.update(doc(db, 'siswa', siswa.id), {
-      status_ujian: 'Selesai',
-      updated_at: serverTimestamp(),
-    });
-    await batch.commit();
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `hasil/${docId}`);
-  }
-
-  return {
-    nilai,
-    benar,
-    salah,
-    tampilkan_nilai: paket.tampilkan_nilai,
-    rev,
-  };
-}
-
-// ===== Admin Operations (Password-Based Auth) =====
-
-async function sha256Bytes(input: string): Promise<Uint8Array> {
-  const data = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return new Uint8Array(digest);
-}
-
-async function computeAdminProofHex(password: string): Promise<string> {
-  const bytes = await sha256Bytes(`cbt_admin_v1:${password}`);
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-async function computeVerifierBase64(proofHex: string): Promise<string> {
-  const bytes = await sha256Bytes(proofHex);
-  let bin = '';
-  bytes.forEach((b) => {
-    bin += String.fromCharCode(b);
-  });
-  return btoa(bin);
-}
-
-function mapAnonymousAuthError(err: unknown): Error {
-  const code = (err as { code?: string })?.code || '';
-  const msg = err instanceof Error ? err.message : String(err);
-  if (
-    code === 'auth/operation-not-allowed' ||
-    code === 'auth/admin-restricted-operation' ||
-    msg.includes('operation-not-allowed') ||
-    msg.includes('admin-restricted-operation')
-  ) {
-    return new Error(
-      'Login Anonymous belum diaktifkan di Firebase Console. Buka Authentication → Sign-in method → Anonymous → Aktifkan (Enable) → Save.'
-    );
-  }
-  return err instanceof Error ? err : new Error(msg);
-}
-
-export async function getAdminAuthStatus(): Promise<{ initialized: boolean }> {
-  try {
-    const snap = await getDoc(doc(db, 'admin_config', 'status'));
-    return { initialized: snap.exists() && snap.data()?.initialized === true };
-  } catch {
-    return { initialized: false };
-  }
-}
-
-export async function setupInitialAdminPassword(password: string): Promise<void> {
-  const cleanPw = password.trim();
-  if (cleanPw.length < 3) {
-    throw new Error('Password admin minimal 3 karakter.');
-  }
-
-  let uid = '';
-  try {
-    const cred = await signInAnonymously(auth);
-    uid = cred.user.uid;
-  } catch (err) {
-    throw mapAnonymousAuthError(err);
-  }
-
-  const proof = await computeAdminProofHex(cleanPw);
-  const verifier = await computeVerifierBase64(proof);
-
-  try {
-    const sessRef = doc(db, 'admin_sessions', uid);
-    const existingSess = await getDoc(sessRef);
-    if (existingSess.exists()) {
-      await deleteDoc(sessRef);
-    }
-
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'admin_config', 'auth'), {
-      verifiers: [verifier],
-      updated_at: serverTimestamp(),
-    });
-    batch.set(doc(db, 'admin_config', 'status'), {
-      initialized: true,
-      updated_at: serverTimestamp(),
-    });
-    batch.set(doc(db, 'admin_pass_labels', 'utama'), {
-      label: 'Password Utama',
-      verifier,
-      created_at: serverTimestamp(),
-    });
-    batch.set(sessRef, {
-      uid,
-      proof,
-      created_at: serverTimestamp(),
-    });
-    await batch.commit();
-  } catch (err) {
-    await signOut(auth).catch(() => undefined);
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('already exists')) {
-      throw new Error('Password admin sudah diatur sebelumnya. Silakan masukkan password Anda.');
-    }
-    throw err instanceof Error ? err : new Error(msg);
-  }
-}
-
-export async function loginAdminWithPassword(password: string): Promise<void> {
-  if (!password) {
-    throw new Error('Masukkan password admin.');
-  }
-
-  let uid = '';
-  try {
-    const cred = await signInAnonymously(auth);
-    uid = cred.user.uid;
-  } catch (err) {
-    throw mapAnonymousAuthError(err);
-  }
-
-  const proof = await computeAdminProofHex(password.trim());
-  const sessRef = doc(db, 'admin_sessions', uid);
-
-  try {
-    const existingSess = await getDoc(sessRef);
-    if (existingSess.exists()) {
-      await deleteDoc(sessRef);
-    }
-    await setDoc(sessRef, {
-      uid,
-      proof,
-      created_at: serverTimestamp(),
-    });
-  } catch (err) {
-    await signOut(auth).catch(() => undefined);
-    const code = (err as { code?: string })?.code || '';
-    const msg = err instanceof Error ? err.message : String(err);
-    if (code === 'permission-denied' || msg.toLowerCase().includes('permission')) {
-      throw new Error('Password admin salah.');
-    }
-    throw err instanceof Error ? err : new Error(msg);
-  }
-}
-
-export async function checkIsCurrentAdminSession(user: User | null): Promise<boolean> {
-  if (!user) return false;
-  try {
-    const sessSnap = await getDoc(doc(db, 'admin_sessions', user.uid));
-    if (sessSnap.exists()) return true;
-  } catch {
-    // fallback check below
-  }
-  if (user.email) {
-    return checkIsAdminEmail(user.email);
-  }
-  return false;
-}
-
-export async function logoutAdminSession(): Promise<void> {
-  const uid = auth.currentUser?.uid;
-  if (uid) {
-    try {
-      await deleteDoc(doc(db, 'admin_sessions', uid));
-    } catch {
-      // ignore if session already removed
-    }
-  }
-  await signOut(auth);
-}
-
-export async function listAdminPassLabels(): Promise<AdminPassLabel[]> {
-  try {
-    const snap = await getDocs(collection(db, 'admin_pass_labels'));
-    return snap.docs
-      .map((d) => ({
-        id: d.id,
-        label: String(d.data().label || 'Password Admin'),
-        verifier: String(d.data().verifier || ''),
-        created_at: d.data().created_at?.toDate ? d.data().created_at.toDate() : null,
-      }))
-      .sort((a, b) => (a.created_at?.getTime() || 0) - (b.created_at?.getTime() || 0));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, 'admin_pass_labels');
-  }
-}
-
-export async function addAdminPasscode(label: string, password: string): Promise<void> {
-  const cleanLabel = label.trim() || 'Password Tambahan';
-  const cleanPw = password.trim();
-  if (cleanPw.length < 3) {
-    throw new Error('Password minimal 3 karakter.');
-  }
-  const proof = await computeAdminProofHex(cleanPw);
-  const verifier = await computeVerifierBase64(proof);
-
-  try {
-    const authRef = doc(db, 'admin_config', 'auth');
-    const authSnap = await getDoc(authRef);
-    const current: string[] = Array.isArray(authSnap.data()?.verifiers)
-      ? authSnap.data()!.verifiers.map(String)
-      : [];
-    if (current.includes(verifier)) {
-      throw new Error('Password tersebut sudah terdaftar.');
-    }
-    if (current.length >= 20) {
-      throw new Error('Maksimal 20 password admin.');
-    }
-    const passId = `pass_${Date.now()}`;
-    const batch = writeBatch(db);
-    batch.update(authRef, {
-      verifiers: [...current, verifier],
-      updated_at: serverTimestamp(),
-    });
-    batch.set(doc(db, 'admin_pass_labels', passId), {
-      label: cleanLabel.slice(0, 80),
-      verifier,
-      created_at: serverTimestamp(),
-    });
-    await batch.commit();
-  } catch (err) {
-    if (
-      err instanceof Error &&
-      (err.message.includes('sudah terdaftar') || err.message.includes('Maksimal'))
-    ) {
-      throw err;
-    }
-    handleFirestoreError(err, OperationType.WRITE, 'admin_pass_labels');
-  }
-}
-
-export async function deleteAdminPasscode(passId: string, verifier: string): Promise<void> {
-  try {
-    const authRef = doc(db, 'admin_config', 'auth');
-    const authSnap = await getDoc(authRef);
-    const current: string[] = Array.isArray(authSnap.data()?.verifiers)
-      ? authSnap.data()!.verifiers.map(String)
-      : [];
-    const next = current.filter((v) => v !== verifier);
-    if (next.length === 0) {
-      throw new Error('Minimal harus tersisa 1 password admin aktif.');
-    }
-    const batch = writeBatch(db);
-    batch.update(authRef, {
-      verifiers: next,
-      updated_at: serverTimestamp(),
-    });
-    batch.delete(doc(db, 'admin_pass_labels', passId));
-    await batch.commit();
-  } catch (err) {
-    if (err instanceof Error && err.message.includes('Minimal harus')) {
-      throw err;
-    }
-    handleFirestoreError(err, OperationType.DELETE, `admin_pass_labels/${passId}`);
-  }
-}
-
-export async function checkIsAdminEmail(email: string | null | undefined): Promise<boolean> {
-  if (!email) return false;
-  if (email.toLowerCase() === 'cahyoooow@gmail.com') return true;
-  try {
-    const snap = await getDoc(doc(db, 'admins', email.toLowerCase()));
-    return snap.exists();
-  } catch {
-    return false;
-  }
-}
-
-export async function ensurePrimaryAdminRecord(email: string, nama: string): Promise<void> {
-  if (email.toLowerCase() !== 'cahyoooow@gmail.com') return;
-  try {
-    const ref = doc(db, 'admins', 'cahyoooow@gmail.com');
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      await setDoc(ref, {
-        email: 'cahyoooow@gmail.com',
-        nama: nama || 'Administrator Utama',
-        role: 'superadmin',
-        created_at: serverTimestamp(),
-      });
-    }
-  } catch (err) {
-    console.warn('Skip ensurePrimaryAdminRecord:', err);
-  }
-}
-
-export async function listAdmins(): Promise<AdminUser[]> {
-  try {
-    const snap = await getDocs(collection(db, 'admins'));
-    return snap.docs.map((d) => ({
-      id: d.id,
-      email: String(d.data().email || d.id),
-      nama: String(d.data().nama || ''),
-      role: d.data().role === 'superadmin' ? 'superadmin' : 'admin',
-    }));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, 'admins');
-  }
-}
-
-export async function saveAdminUser(email: string, nama: string): Promise<void> {
-  const cleanEmail = email.trim().toLowerCase();
-  try {
-    await setDoc(doc(db, 'admins', cleanEmail), {
-      email: cleanEmail,
-      nama: nama.trim() || cleanEmail.split('@')[0],
-      role: cleanEmail === 'cahyoooow@gmail.com' ? 'superadmin' : 'admin',
-      created_at: serverTimestamp(),
-    });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `admins/${cleanEmail}`);
-  }
-}
-
-export async function deleteAdminUser(email: string): Promise<void> {
-  const cleanEmail = email.trim().toLowerCase();
-  if (cleanEmail === 'cahyoooow@gmail.com') {
-    throw new Error('Admin utama tidak dapat dihapus.');
-  }
-  try {
-    await deleteDoc(doc(db, 'admins', cleanEmail));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `admins/${cleanEmail}`);
-  }
-}
-
-export async function listPaket(): Promise<PaketUjian[]> {
-  try {
-    const snap = await getDocs(collection(db, 'paket'));
-    return snap.docs.map((d) => {
-      const x = d.data();
-      return {
-        id: d.id,
-        nama_paket_soal: String(x.nama_paket_soal || ''),
-        mata_pelajaran: String(x.mata_pelajaran || ''),
-        durasi_menit: Number(x.durasi_menit) || 60,
-        status: x.status === 'Aktif' ? 'Aktif' : 'Nonaktif',
-        token_paket_soal: String(x.token_paket_soal || ''),
-        waktu_mulai: String(x.waktu_mulai || ''),
-        waktu_berakhir: String(x.waktu_berakhir || ''),
-        tampilkan_nilai: x.tampilkan_nilai !== false,
-        acak_soal: x.acak_soal === true,
-      };
-    });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, 'paket');
-  }
-}
-
-export async function savePaket(
-  paket: Omit<PaketUjian, 'id'> & { id?: string },
-  oldToken?: string
-): Promise<string> {
-  const id = paket.id ? safeDocId(paket.id) : `pkt_${Date.now()}`;
-  const token = (paket.token_paket_soal || generateRandomToken()).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
-  const payload = {
-    nama_paket_soal: paket.nama_paket_soal.trim(),
-    mata_pelajaran: paket.mata_pelajaran.trim(),
-    durasi_menit: Math.max(1, Math.min(600, Math.round(Number(paket.durasi_menit) || 60))),
-    status: paket.status === 'Aktif' ? 'Aktif' : 'Nonaktif',
-    token_paket_soal: token,
-    waktu_mulai: paket.waktu_mulai || '',
-    waktu_berakhir: paket.waktu_berakhir || '',
-    tampilkan_nilai: paket.tampilkan_nilai !== false,
-    acak_soal: paket.acak_soal === true,
-    updated_at: serverTimestamp(),
-  };
-
-  try {
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'paket', id), payload);
-    batch.set(doc(db, 'paket_tokens', token), {
-      paket_id: id,
-      ...payload,
-    });
-    if (oldToken && oldToken.toUpperCase() !== token) {
-      batch.delete(doc(db, 'paket_tokens', oldToken.toUpperCase()));
-    }
-
-    // Sync aktif & rilis_kunci flags on all questions belonging to this paket
-    const [soalSnap, kunciSnap] = await Promise.all([
-      getDocs(query(collection(db, 'soal'), where('paket_id', '==', id))),
-      getDocs(query(collection(db, 'soal_kunci'), where('paket_id', '==', id))),
-    ]);
-    const isAktif = payload.status === 'Aktif';
-    soalSnap.docs.forEach((d) => {
-      batch.update(d.ref, {
-        aktif: isAktif,
-        paket: payload.nama_paket_soal,
-        updated_at: serverTimestamp(),
-      });
-    });
-    kunciSnap.docs.forEach((d) => {
-      batch.update(d.ref, {
-        rilis_kunci: payload.tampilkan_nilai,
-        updated_at: serverTimestamp(),
-      });
-    });
-
-    await batch.commit();
-    return id;
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `paket/${id}`);
-  }
-}
-
-export async function deletePaket(paket: PaketUjian): Promise<void> {
-  try {
-    const batch = writeBatch(db);
-    batch.delete(doc(db, 'paket', paket.id));
-    if (paket.token_paket_soal) {
-      batch.delete(doc(db, 'paket_tokens', paket.token_paket_soal.toUpperCase()));
-    }
-    const [soalSnap, kunciSnap] = await Promise.all([
-      getDocs(query(collection(db, 'soal'), where('paket_id', '==', paket.id))),
-      getDocs(query(collection(db, 'soal_kunci'), where('paket_id', '==', paket.id))),
-    ]);
-    soalSnap.docs.forEach((d) => batch.delete(d.ref));
-    kunciSnap.docs.forEach((d) => batch.delete(d.ref));
-    await batch.commit();
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `paket/${paket.id}`);
-  }
-}
-
-export async function copyPaketWithSoal(src: PaketUjian, allPakets: PaketUjian[]): Promise<PaketUjian> {
-  const existingNames = new Set(allPakets.map((p) => p.nama_paket_soal.toLowerCase()));
-  const existingTokens = new Set(allPakets.map((p) => p.token_paket_soal.toUpperCase()));
-
-  let newName = `${src.nama_paket_soal} (Salinan)`;
-  let idx = 2;
-  while (existingNames.has(newName.toLowerCase())) {
-    newName = `${src.nama_paket_soal} (Salinan ${idx++})`;
-  }
-
-  let newToken = generateRandomToken();
-  while (existingTokens.has(newToken)) {
-    newToken = generateRandomToken();
-  }
-
-  const newId = await savePaket({
-    nama_paket_soal: newName,
-    mata_pelajaran: src.mata_pelajaran,
-    durasi_menit: src.durasi_menit,
-    status: 'Nonaktif',
-    token_paket_soal: newToken,
-    waktu_mulai: src.waktu_mulai,
-    waktu_berakhir: src.waktu_berakhir,
-    tampilkan_nilai: src.tampilkan_nilai,
-    acak_soal: src.acak_soal,
-  });
-
-  const srcQuestions = await listSoalLengkap(src.id);
-  if (srcQuestions.length > 0) {
-    const batch = writeBatch(db);
-    const base = Date.now();
-    srcQuestions.forEach((q, i) => {
-      const qId = `S${base}_${i}`;
-      batch.set(doc(db, 'soal', qId), {
-        id_soal: qId,
-        paket_id: newId,
-        paket: newName,
-        nomor_soal: q.nomor_soal,
-        jenis_soal: q.jenis_soal,
-        teks_stimulus: q.teks_stimulus,
-        gambar_stimulus_url: q.gambar_stimulus_url,
-        teks_soal: q.teks_soal,
-        gambar_soal_url: q.gambar_soal_url,
-        pilihan_a: q.pilihan_a,
-        pilihan_b: q.pilihan_b,
-        pilihan_c: q.pilihan_c,
-        pilihan_d: q.pilihan_d,
-        bobot: q.bobot,
-        aktif: false,
-        tka_mapel: q.tka_mapel || '',
-        tka_elemen: q.tka_elemen || '',
-        tka_subelemen: q.tka_subelemen || '',
-        tka_indikator: q.tka_indikator || '',
-        updated_at: serverTimestamp(),
-      });
-      batch.set(doc(db, 'soal_kunci', qId), {
-        id_soal: qId,
-        paket_id: newId,
-        kunci_jawaban: q.kunci_jawaban,
-        pembahasan: q.pembahasan,
-        bobot: q.bobot,
-        rilis_kunci: src.tampilkan_nilai,
-        updated_at: serverTimestamp(),
-      });
-    });
-    await batch.commit();
-  }
-
-  return {
-    id: newId,
-    nama_paket_soal: newName,
-    mata_pelajaran: src.mata_pelajaran,
-    durasi_menit: src.durasi_menit,
-    status: 'Nonaktif',
-    token_paket_soal: newToken,
-    waktu_mulai: src.waktu_mulai,
-    waktu_berakhir: src.waktu_berakhir,
-    tampilkan_nilai: src.tampilkan_nilai,
-    acak_soal: src.acak_soal,
-  };
-}
-
-export async function listSoalLengkap(paketId?: string): Promise<SoalLengkap[]> {
-  try {
-    const qPub = paketId
-      ? query(collection(db, 'soal'), where('paket_id', '==', paketId))
-      : collection(db, 'soal');
-    const qKun = paketId
-      ? query(collection(db, 'soal_kunci'), where('paket_id', '==', paketId))
-      : collection(db, 'soal_kunci');
-
-    const [pubSnap, kunSnap] = await Promise.all([getDocs(qPub), getDocs(qKun)]);
-    const kunMap = new Map<string, Record<string, unknown>>();
-    kunSnap.docs.forEach((d) => kunMap.set(d.id, d.data()));
-
-    return pubSnap.docs
-      .map((d) => {
-        const x = d.data();
-        const k = kunMap.get(d.id) || {};
-        return {
-          id: d.id,
-          id_soal: String(x.id_soal || d.id),
-          paket_id: String(x.paket_id || ''),
-          paket: String(x.paket || ''),
-          nomor_soal: Number(x.nomor_soal) || 1,
-          jenis_soal: String(x.jenis_soal || 'PG'),
-          teks_stimulus: String(x.teks_stimulus || ''),
-          gambar_stimulus_url: String(x.gambar_stimulus_url || ''),
-          teks_soal: String(x.teks_soal || ''),
-          gambar_soal_url: String(x.gambar_soal_url || ''),
-          pilihan_a: String(x.pilihan_a || ''),
-          pilihan_b: String(x.pilihan_b || ''),
-          pilihan_c: String(x.pilihan_c || ''),
-          pilihan_d: String(x.pilihan_d || ''),
-          bobot: Number(x.bobot) || 1,
-          aktif: x.aktif === true,
-          tka_mapel: x.tka_mapel ? String(x.tka_mapel) : '',
-          tka_elemen: x.tka_elemen ? String(x.tka_elemen) : '',
-          tka_subelemen: x.tka_subelemen ? String(x.tka_subelemen) : '',
-          tka_indikator: x.tka_indikator ? String(x.tka_indikator) : '',
-          kunci_jawaban: String(k.kunci_jawaban || ''),
-          pembahasan: String(k.pembahasan || ''),
-          rilis_kunci: k.rilis_kunci !== false,
-        };
-      })
-      .sort((a, b) => a.nomor_soal - b.nomor_soal);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, 'soal');
-  }
-}
-
-export async function saveSoal(soal: Omit<SoalLengkap, 'id'> & { id?: string }, paket: PaketUjian): Promise<void> {
-  const id = soal.id_soal ? safeDocId(soal.id_soal) : `S${Date.now()}`;
-  const bobot = Number(soal.bobot) || 1;
-  try {
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'soal', id), {
-      id_soal: id,
-      paket_id: paket.id,
-      paket: paket.nama_paket_soal,
-      nomor_soal: Math.max(1, Math.round(Number(soal.nomor_soal) || 1)),
-      jenis_soal: soal.jenis_soal || 'PG',
-      teks_stimulus: soal.teks_stimulus || '',
-      gambar_stimulus_url: soal.gambar_stimulus_url || '',
-      teks_soal: soal.teks_soal || '',
-      gambar_soal_url: soal.gambar_soal_url || '',
-      pilihan_a: soal.pilihan_a || '',
-      pilihan_b: soal.pilihan_b || '',
-      pilihan_c: soal.pilihan_c || '',
-      pilihan_d: soal.pilihan_d || '',
-      bobot,
-      aktif: paket.status === 'Aktif',
-      tka_mapel: (soal.tka_mapel || '').slice(0, 80),
-      tka_elemen: (soal.tka_elemen || '').slice(0, 160),
-      tka_subelemen: (soal.tka_subelemen || '').slice(0, 200),
-      tka_indikator: (soal.tka_indikator || '').slice(0, 300),
-      updated_at: serverTimestamp(),
-    });
-    batch.set(doc(db, 'soal_kunci', id), {
-      id_soal: id,
-      paket_id: paket.id,
-      kunci_jawaban: soal.kunci_jawaban || '',
-      pembahasan: soal.pembahasan || '',
-      bobot,
-      rilis_kunci: paket.tampilkan_nilai !== false,
-      updated_at: serverTimestamp(),
-    });
-    await batch.commit();
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `soal/${id}`);
-  }
-}
-
-export async function updateSoalTkaBatch(
-  updates: {
-    id: string;
-    tka_mapel: string;
-    tka_elemen: string;
-    tka_subelemen: string;
-    tka_indikator: string;
-  }[]
-): Promise<number> {
-  if (updates.length === 0) return 0;
-  const chunkSize = 400;
-  let total = 0;
-  try {
-    for (let i = 0; i < updates.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      updates.slice(i, i + chunkSize).forEach((u) => {
-        batch.update(doc(db, 'soal', u.id), {
-          tka_mapel: u.tka_mapel.slice(0, 80),
-          tka_elemen: u.tka_elemen.slice(0, 160),
-          tka_subelemen: u.tka_subelemen.slice(0, 200),
-          tka_indikator: u.tka_indikator.slice(0, 300),
-          updated_at: serverTimestamp(),
-        });
-        total++;
-      });
-      await batch.commit();
-    }
-    return total;
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, 'soal');
-  }
-}
-
-export async function importSoalBatch(items: Partial<SoalLengkap>[], paket: PaketUjian): Promise<number> {
-  const chunkSize = 200; // 2 writes per question = 400 writes < 500 batch limit
-  let total = 0;
-  for (let i = 0; i < items.length; i += chunkSize) {
-    const chunk = items.slice(i, i + chunkSize);
-    const batch = writeBatch(db);
-    const base = Date.now();
-    chunk.forEach((item, idx) => {
-      const id = item.id_soal ? safeDocId(item.id_soal) : `S${base}_${i + idx}`;
-      const bobot = Number(item.bobot) || 1;
-      batch.set(doc(db, 'soal', id), {
-        id_soal: id,
-        paket_id: paket.id,
-        paket: paket.nama_paket_soal,
-        nomor_soal: Math.max(1, Math.round(Number(item.nomor_soal) || i + idx + 1)),
-        jenis_soal: String(item.jenis_soal || 'PG'),
-        teks_stimulus: String(item.teks_stimulus || ''),
-        gambar_stimulus_url: String(item.gambar_stimulus_url || ''),
-        teks_soal: String(item.teks_soal || ''),
-        gambar_soal_url: String(item.gambar_soal_url || ''),
-        pilihan_a: String(item.pilihan_a || ''),
-        pilihan_b: String(item.pilihan_b || ''),
-        pilihan_c: String(item.pilihan_c || ''),
-        pilihan_d: String(item.pilihan_d || ''),
-        bobot,
-        aktif: paket.status === 'Aktif',
-        tka_mapel: String(item.tka_mapel || '').slice(0, 80),
-        tka_elemen: String(item.tka_elemen || '').slice(0, 160),
-        tka_subelemen: String(item.tka_subelemen || '').slice(0, 200),
-        tka_indikator: String(item.tka_indikator || '').slice(0, 300),
-        updated_at: serverTimestamp(),
-      });
-      batch.set(doc(db, 'soal_kunci', id), {
-        id_soal: id,
-        paket_id: paket.id,
-        kunci_jawaban: String(item.kunci_jawaban || ''),
-        pembahasan: String(item.pembahasan || ''),
-        bobot,
-        rilis_kunci: paket.tampilkan_nilai !== false,
-        updated_at: serverTimestamp(),
-      });
-      total++;
-    });
-    await batch.commit();
-  }
-  return total;
-}
-
-export async function deleteSoalByIds(ids: string[]): Promise<void> {
-  try {
-    const chunkSize = 200;
-    for (let i = 0; i < ids.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      ids.slice(i, i + chunkSize).forEach((id) => {
-        batch.delete(doc(db, 'soal', id));
-        batch.delete(doc(db, 'soal_kunci', id));
-      });
-      await batch.commit();
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, 'soal');
-  }
-}
-
-export async function listSiswa(): Promise<Siswa[]> {
-  try {
-    const snap = await getDocs(collection(db, 'siswa'));
-    return snap.docs
-      .map((d) => {
-        const x = d.data();
-        return {
-          id: d.id,
-          nama_siswa: String(x.nama_siswa || ''),
-          nama_key: String(x.nama_key || d.id),
-          kelas: String(x.kelas || ''),
-          status_ujian: String(x.status_ujian || 'Belum'),
-          status_akun: (x.status_akun === 'Nonaktif' ? 'Nonaktif' : 'Aktif') as 'Aktif' | 'Nonaktif',
-        };
-      })
-      .sort((a, b) => a.kelas.localeCompare(b.kelas) || a.nama_siswa.localeCompare(b.nama_siswa));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, 'siswa');
-  }
-}
-
-export async function saveSiswa(siswa: {
-  id?: string;
-  nama_siswa: string;
-  kelas: string;
-  status_ujian?: string;
-  status_akun: 'Aktif' | 'Nonaktif';
-}): Promise<void> {
-  const key = slugifyName(siswa.nama_siswa);
-  const id = siswa.id ? safeDocId(siswa.id) : key;
-  try {
-    const batch = writeBatch(db);
-    if (siswa.id && siswa.id !== key) {
-      batch.delete(doc(db, 'siswa', siswa.id));
-    }
-    batch.set(doc(db, 'siswa', key), {
-      nama_siswa: siswa.nama_siswa.trim(),
-      nama_key: key,
-      kelas: siswa.kelas.trim(),
-      status_ujian: siswa.status_ujian || 'Belum',
-      status_akun: siswa.status_akun === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
-      updated_at: serverTimestamp(),
-    });
-    await batch.commit();
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `siswa/${id}`);
-  }
-}
-
-export async function importSiswaBatch(
-  rows: { nama_siswa: string; kelas: string; status_akun?: string }[],
-  existingSiswa: Siswa[]
-): Promise<{ added: number; skipped: number }> {
-  const have = new Set(existingSiswa.map((s) => s.nama_key));
-  const toAdd: { key: string; nama: string; kelas: string; status: 'Aktif' | 'Nonaktif' }[] = [];
-
-  rows.forEach((r) => {
-    const nama = String(r.nama_siswa || '').trim();
-    const key = slugifyName(nama);
-    if (!nama || have.has(key)) return;
-    have.add(key);
-    toAdd.push({
-      key,
-      nama,
-      kelas: String(r.kelas || '-').trim() || '-',
-      status: r.status_akun === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
-    });
-  });
-
-  const chunkSize = 400;
-  for (let i = 0; i < toAdd.length; i += chunkSize) {
-    const batch = writeBatch(db);
-    toAdd.slice(i, i + chunkSize).forEach((s) => {
-      batch.set(doc(db, 'siswa', s.key), {
-        nama_siswa: s.nama,
-        nama_key: s.key,
-        kelas: s.kelas,
-        status_ujian: 'Belum',
-        status_akun: s.status,
-        updated_at: serverTimestamp(),
-      });
-    });
-    await batch.commit();
-  }
-
-  return { added: toAdd.length, skipped: rows.length - toAdd.length };
-}
-
-export async function deleteSiswa(id: string): Promise<void> {
-  try {
-    await deleteDoc(doc(db, 'siswa', id));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `siswa/${id}`);
-  }
-}
-
-export async function listHasil(paketId?: string): Promise<HasilUjian[]> {
-  try {
-    const q = paketId
-      ? query(collection(db, 'hasil'), where('paket_id', '==', paketId))
-      : collection(db, 'hasil');
-    const snap = await getDocs(q);
-    return snap.docs.map((d) => {
-      const x = d.data();
-      return {
-        id: d.id,
-        paket_id: String(x.paket_id || ''),
-        paket: String(x.paket || ''),
-        siswa_id: String(x.siswa_id || ''),
-        nama_siswa: String(x.nama_siswa || ''),
-        kelas: String(x.kelas || ''),
-        nilai_akhir: Number(x.nilai_akhir) || 0,
-        total_benar: Number(x.total_benar) || 0,
-        total_salah: Number(x.total_salah) || 0,
-        pelanggaran_tab: Number(x.pelanggaran_tab) || 0,
-        detail_jawaban: (x.detail_jawaban || {}) as Record<string, AnswerValue>,
-        status_penilaian: x.status_penilaian === 'menunggu' ? 'menunggu' : 'dinilai',
-        created_at: x.created_at?.toDate ? x.created_at.toDate() : null,
-      };
-    });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, 'hasil');
-  }
-}
-
-export async function listPelanggaran(): Promise<LogPelanggaran[]> {
-  try {
-    const snap = await getDocs(collection(db, 'pelanggaran'));
-    return snap.docs
-      .map((d) => {
-        const x = d.data();
-        return {
-          id: d.id,
-          siswa_id: String(x.siswa_id || ''),
-          nama_siswa: String(x.nama_siswa || ''),
-          kelas: String(x.kelas || ''),
-          paket_id: String(x.paket_id || ''),
-          paket_nama: String(x.paket_nama || ''),
-          jenis_pelanggaran: String(x.jenis_pelanggaran || ''),
-          status_ujian: String(x.status_ujian || ''),
-          created_at: x.created_at?.toDate ? x.created_at.toDate() : null,
-        };
-      })
-      .sort((a, b) => (b.created_at?.getTime() || 0) - (a.created_at?.getTime() || 0));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, 'pelanggaran');
-  }
-}
-
-export async function deletePelanggaranByIds(ids: string[]): Promise<void> {
-  try {
-    const chunkSize = 400;
-    for (let i = 0; i < ids.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      ids.slice(i, i + chunkSize).forEach((id) => batch.delete(doc(db, 'pelanggaran', id)));
-      await batch.commit();
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, 'pelanggaran');
-  }
-}
-
-export async function updatePelanggaran(
-  logId: string,
-  payload: {
-    nama_siswa: string;
-    kelas: string;
-    paket_id: string;
-    paket_nama: string;
-    jenis_pelanggaran: string;
-    status_ujian: string;
-  }
-): Promise<void> {
-  try {
-    const nama = payload.nama_siswa.trim();
-    if (!nama) throw new Error('Nama siswa wajib diisi.');
-    await updateDoc(doc(db, 'pelanggaran', logId), {
-      siswa_id: slugifyName(nama).slice(0, 120),
-      nama_siswa: nama.slice(0, 120),
-      kelas: (payload.kelas.trim() || '-').slice(0, 40),
-      paket_id: payload.paket_id.trim().slice(0, 128),
-      paket_nama: (payload.paket_nama.trim() || '-').slice(0, 160),
-      jenis_pelanggaran: (payload.jenis_pelanggaran.trim() || 'Pelanggaran Ujian').slice(0, 160),
-      status_ujian: payload.status_ujian.trim().slice(0, 200),
-    });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, `pelanggaran/${logId}`);
-  }
-}
-
-export async function resetPelanggaran(params: {
-  siswaId?: string;
-  namaSiswa?: string;
-  paketId?: string;
-  paketNama?: string;
-}): Promise<{ deletedLogs: number; resetHasil: number }> {
-  const { siswaId, namaSiswa, paketId, paketNama } = params;
-  const normNama = namaSiswa ? namaSiswa.trim().toLowerCase() : '';
-  const targetSlug = siswaId || (namaSiswa ? slugifyName(namaSiswa) : '');
-  const hasPaketFilter = Boolean(paketId && paketId !== '__ALL__');
-  const normPaketNama = paketNama ? paketNama.trim().toLowerCase() : '';
-
-  const matchStudent = (docSiswaId: unknown, docNama: unknown) => {
-    if (!targetSlug && !normNama) return true;
-    const sId = String(docSiswaId || '');
-    const sNama = String(docNama || '').trim().toLowerCase();
-    return (
-      (targetSlug !== '' && (sId === targetSlug || slugifyName(sNama) === targetSlug)) ||
-      (normNama !== '' && sNama === normNama)
-    );
-  };
-
-  const matchPaket = (docPaketId: unknown, docPaketNama: unknown, docStatus = '') => {
-    if (!hasPaketFilter) return true;
-    const pId = String(docPaketId || '');
-    const pNama = String(docPaketNama || '').trim().toLowerCase();
-    const sStat = String(docStatus || '').trim().toLowerCase();
-    return (
-      pId === paketId ||
-      (normPaketNama !== '' && (pNama === normPaketNama || sStat.includes(normPaketNama)))
-    );
-  };
-
-  let deletedLogs = 0;
-  let resetHasil = 0;
-
-  try {
-    const pelSnap = await getDocs(collection(db, 'pelanggaran'));
-    const logsToDelete = pelSnap.docs.filter((d) => {
-      const x = d.data();
-      return (
-        matchStudent(x.siswa_id, x.nama_siswa) &&
-        matchPaket(x.paket_id, x.paket_nama, String(x.status_ujian || ''))
-      );
-    });
-    const chunkSize = 400;
-    for (let i = 0; i < logsToDelete.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      logsToDelete.slice(i, i + chunkSize).forEach((d) => batch.delete(d.ref));
-      await batch.commit();
-      deletedLogs += logsToDelete.slice(i, i + chunkSize).length;
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, 'pelanggaran');
-  }
-
-  try {
-    const hasilSnap = await getDocs(collection(db, 'hasil'));
-    const hasilsToReset = hasilSnap.docs.filter((d) => {
-      const x = d.data();
-      return (
-        Number(x.pelanggaran_tab || 0) > 0 &&
-        matchStudent(x.siswa_id, x.nama_siswa) &&
-        matchPaket(x.paket_id, x.paket)
-      );
-    });
-    const chunkSize = 400;
-    for (let i = 0; i < hasilsToReset.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      hasilsToReset.slice(i, i + chunkSize).forEach((d) => {
-        batch.update(d.ref, { pelanggaran_tab: 0 });
-      });
-      await batch.commit();
-      resetHasil += hasilsToReset.slice(i, i + chunkSize).length;
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, 'hasil');
-  }
-
-  try {
-    const progSnap = await getDocs(collection(db, 'progres'));
-    const progsToReset = progSnap.docs.filter((d) => {
-      const x = d.data();
-      return (
-        Number(x.pelanggaran || 0) > 0 &&
-        matchStudent(x.siswa_id, x.nama_siswa) &&
-        matchPaket(x.paket_id, x.paket_nama)
-      );
-    });
-    const chunkSize = 400;
-    for (let i = 0; i < progsToReset.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      progsToReset.slice(i, i + chunkSize).forEach((d) => {
-        batch.update(d.ref, { pelanggaran: 0, updated_at: serverTimestamp() });
-      });
-      await batch.commit();
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, 'progres');
-  }
-
-  return { deletedLogs, resetHasil };
-}
-
-export async function resetPesertaUjian(
-  paket: PaketUjian,
-  targetSiswaIds?: string[] // undefined = reset ALL students for this paket
-): Promise<number> {
-  try {
-    const allSiswa = await listSiswa();
-    const targets = targetSiswaIds
-      ? allSiswa.filter((s) => targetSiswaIds.includes(s.id))
-      : allSiswa;
-
-    const chunkSize = 120; // 3 ops per student = 360 < 500
-    for (let i = 0; i < targets.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      targets.slice(i, i + chunkSize).forEach((s) => {
-        const compositeId = `${paket.id}__${s.id}`;
-        batch.update(doc(db, 'siswa', s.id), {
-          status_ujian: 'Belum',
-          updated_at: serverTimestamp(),
-        });
-        batch.delete(doc(db, 'hasil', compositeId));
-        batch.delete(doc(db, 'progres', compositeId));
-      });
-      await batch.commit();
-    }
-    return targets.length;
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'reset_peserta');
-  }
-}
-
-export async function forceFinishSiswa(
-  paket: PaketUjian,
-  siswa: Siswa,
-  progres: ProgresUjian | undefined,
-  questions: SoalLengkap[]
-): Promise<void> {
-  const compositeId = `${paket.id}__${siswa.id}`;
-  const ans = progres?.jawaban || {};
-  const scored = calculateExamScore(questions, ans);
-
-  try {
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'hasil', compositeId), {
-      paket_id: paket.id,
-      paket: paket.nama_paket_soal,
-      siswa_id: siswa.id,
-      nama_siswa: siswa.nama_siswa,
-      kelas: siswa.kelas,
-      nilai_akhir: scored.nilai,
-      total_benar: scored.benar,
-      total_salah: scored.salah,
-      pelanggaran_tab: progres?.pelanggaran || 0,
-      detail_jawaban: ans,
-      status_penilaian: 'dinilai',
-      created_at: serverTimestamp(),
-    });
-    batch.delete(doc(db, 'progres', compositeId));
-    batch.update(doc(db, 'siswa', siswa.id), {
-      status_ujian: 'Selesai',
-      updated_at: serverTimestamp(),
-    });
-    await batch.commit();
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `hasil/${compositeId}`);
-  }
-}
-
-export async function rescoreHasil(
-  paket: PaketUjian,
-  questions: SoalLengkap[],
-  hasilList: HasilUjian[]
-): Promise<number> {
-  let count = 0;
-  const chunkSize = 400;
-  try {
-    for (let i = 0; i < hasilList.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      hasilList.slice(i, i + chunkSize).forEach((h) => {
-        const scored = calculateExamScore(questions, h.detail_jawaban || {});
-        batch.update(doc(db, 'hasil', h.id), {
-          nilai_akhir: scored.nilai,
-          total_benar: scored.benar,
-          total_salah: scored.salah,
-          status_penilaian: 'dinilai',
-        });
-        count++;
-      });
-      await batch.commit();
-    }
-    return count;
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, 'hasil');
-  }
-}
-
-// Real-time listeners for Pantau & Live Score
-export function subscribeMonitorPaket(
-  paketId: string,
-  callbacks: {
-    onProgres: (list: ProgresUjian[]) => void;
-    onHasil: (list: HasilUjian[]) => void;
-    onSiswa: (list: Siswa[]) => void;
-  }
-): Unsubscribe {
-  const qProg = query(collection(db, 'progres'), where('paket_id', '==', paketId));
-  const qHasil = query(collection(db, 'hasil'), where('paket_id', '==', paketId));
-
-  const u1 = onSnapshot(
-    qProg,
-    (snap) => {
-      callbacks.onProgres(
-        snap.docs.map((d) => {
-          const x = d.data();
-          return {
-            id: d.id,
-            paket_id: String(x.paket_id || ''),
-            paket_nama: String(x.paket_nama || ''),
-            siswa_id: String(x.siswa_id || ''),
-            nama_siswa: String(x.nama_siswa || ''),
-            kelas: String(x.kelas || ''),
-            jawaban: (x.jawaban || {}) as Record<string, AnswerValue>,
-            ragu: (x.ragu || {}) as Record<string, boolean>,
-            current_index: Number(x.current_index) || 0,
-            sisa_detik: Number(x.sisa_detik) || 0,
-            pelanggaran: Number(x.pelanggaran) || 0,
-            updated_at: x.updated_at?.toDate ? x.updated_at.toDate() : null,
-          };
-        })
-      );
-    },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'progres')
-  );
-
-  const u2 = onSnapshot(
-    qHasil,
-    (snap) => {
-      callbacks.onHasil(
-        snap.docs.map((d) => {
-          const x = d.data();
-          return {
-            id: d.id,
-            paket_id: String(x.paket_id || ''),
-            paket: String(x.paket || ''),
-            siswa_id: String(x.siswa_id || ''),
-            nama_siswa: String(x.nama_siswa || ''),
-            kelas: String(x.kelas || ''),
-            nilai_akhir: Number(x.nilai_akhir) || 0,
-            total_benar: Number(x.total_benar) || 0,
-            total_salah: Number(x.total_salah) || 0,
-            pelanggaran_tab: Number(x.pelanggaran_tab) || 0,
-            detail_jawaban: (x.detail_jawaban || {}) as Record<string, AnswerValue>,
-            status_penilaian: x.status_penilaian === 'menunggu' ? 'menunggu' : 'dinilai',
-            created_at: x.created_at?.toDate ? x.created_at.toDate() : null,
-          };
-        })
-      );
-    },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'hasil')
-  );
-
-  const u3 = onSnapshot(
-    collection(db, 'siswa'),
-    (snap) => {
-      callbacks.onSiswa(
-        snap.docs
-          .map((d) => {
-            const x = d.data();
-            return {
-              id: d.id,
-              nama_siswa: String(x.nama_siswa || ''),
-              nama_key: String(x.nama_key || d.id),
-              kelas: String(x.kelas || ''),
-              status_ujian: String(x.status_ujian || 'Belum'),
-              status_akun: (x.status_akun === 'Nonaktif' ? 'Nonaktif' : 'Aktif') as 'Aktif' | 'Nonaktif',
-            };
-          })
-          .sort((a, b) => a.kelas.localeCompare(b.kelas) || a.nama_siswa.localeCompare(b.nama_siswa))
-      );
-    },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'siswa')
-  );
-
-  return () => {
-    u1();
-    u2();
-    u3();
-  };
-}
-
-export function subscribeMonitorAll(callbacks: {
-  onProgres: (list: ProgresUjian[]) => void;
-  onHasil: (list: HasilUjian[]) => void;
-  onSiswa: (list: Siswa[]) => void;
-}): Unsubscribe {
-  const u1 = onSnapshot(
-    collection(db, 'progres'),
-    (snap) => {
-      callbacks.onProgres(
-        snap.docs.map((d) => {
-          const x = d.data();
-          return {
-            id: d.id,
-            paket_id: String(x.paket_id || ''),
-            paket_nama: String(x.paket_nama || ''),
-            siswa_id: String(x.siswa_id || ''),
-            nama_siswa: String(x.nama_siswa || ''),
-            kelas: String(x.kelas || ''),
-            jawaban: (x.jawaban || {}) as Record<string, AnswerValue>,
-            ragu: (x.ragu || {}) as Record<string, boolean>,
-            current_index: Number(x.current_index) || 0,
-            sisa_detik: Number(x.sisa_detik) || 0,
-            pelanggaran: Number(x.pelanggaran) || 0,
-            updated_at: x.updated_at?.toDate ? x.updated_at.toDate() : null,
-          };
-        })
-      );
-    },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'progres')
-  );
-
-  const u2 = onSnapshot(
-    collection(db, 'hasil'),
-    (snap) => {
-      callbacks.onHasil(
-        snap.docs.map((d) => {
-          const x = d.data();
-          return {
-            id: d.id,
-            paket_id: String(x.paket_id || ''),
-            paket: String(x.paket || ''),
-            siswa_id: String(x.siswa_id || ''),
-            nama_siswa: String(x.nama_siswa || ''),
-            kelas: String(x.kelas || ''),
-            nilai_akhir: Number(x.nilai_akhir) || 0,
-            total_benar: Number(x.total_benar) || 0,
-            total_salah: Number(x.total_salah) || 0,
-            pelanggaran_tab: Number(x.pelanggaran_tab) || 0,
-            detail_jawaban: (x.detail_jawaban || {}) as Record<string, AnswerValue>,
-            status_penilaian: x.status_penilaian === 'menunggu' ? 'menunggu' : 'dinilai',
-            created_at: x.created_at?.toDate ? x.created_at.toDate() : null,
-          };
-        })
-      );
-    },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'hasil')
-  );
-
-  const u3 = onSnapshot(
-    collection(db, 'siswa'),
-    (snap) => {
-      callbacks.onSiswa(
-        snap.docs
-          .map((d) => {
-            const x = d.data();
-            return {
-              id: d.id,
-              nama_siswa: String(x.nama_siswa || ''),
-              nama_key: String(x.nama_key || d.id),
-              kelas: String(x.kelas || ''),
-              status_ujian: String(x.status_ujian || 'Belum'),
-              status_akun: (x.status_akun === 'Nonaktif' ? 'Nonaktif' : 'Aktif') as
-                | 'Aktif'
-                | 'Nonaktif',
-            };
-          })
-          .sort((a, b) => a.kelas.localeCompare(b.kelas) || a.nama_siswa.localeCompare(b.nama_siswa))
-      );
-    },
-    (err) => handleFirestoreError(err, OperationType.LIST, 'siswa')
-  );
-
-  return () => {
-    u1();
-    u2();
-    u3();
-  };
-}
-
-// ===== Seed Sample Data (matching Code.gs setupDatabase) =====
-export async function seedSampleDatabase(): Promise<void> {
-  const batch = writeBatch(db);
-
-  batch.set(doc(db, 'pengaturan', 'global'), {
-    ...DEFAULT_PENGATURAN,
-    updated_at: serverTimestamp(),
-  });
-
-  DEFAULT_TATA_TERTIB.forEach((teks, idx) => {
-    const no = idx + 1;
-    batch.set(doc(db, 'tata_tertib', `tib_${no}`), {
-      no,
-      teks,
-      updated_at: serverTimestamp(),
-    });
-  });
-
-  const samplePakets = [
-    {
-      id: 'pkt_mtk_6',
-      nama_paket_soal: 'Matematika Kelas 6',
-      mata_pelajaran: 'Matematika',
-      durasi_menit: 60,
-      status: 'Aktif',
-      token_paket_soal: 'MTK123',
-      waktu_mulai: '2026-01-01 00:00:00',
-      waktu_berakhir: '2030-12-31 23:59:00',
-      tampilkan_nilai: true,
-      acak_soal: false,
-    },
-    {
-      id: 'pkt_ipa_6',
-      nama_paket_soal: 'IPA Kelas 6',
-      mata_pelajaran: 'IPA',
-      durasi_menit: 45,
-      status: 'Aktif',
-      token_paket_soal: 'IPA123',
-      waktu_mulai: '2026-01-01 00:00:00',
-      waktu_berakhir: '2030-12-31 23:59:00',
-      tampilkan_nilai: true,
-      acak_soal: false,
-    },
-    {
-      id: 'pkt_bin_6',
-      nama_paket_soal: 'Bahasa Indonesia Kelas 6',
-      mata_pelajaran: 'Bahasa Indonesia',
-      durasi_menit: 60,
-      status: 'Nonaktif',
-      token_paket_soal: 'BIN123',
-      waktu_mulai: '2026-01-01 00:00:00',
-      waktu_berakhir: '2030-12-31 23:59:00',
-      tampilkan_nilai: true,
-      acak_soal: false,
-    },
-  ];
-
-  samplePakets.forEach((p) => {
-    const { id, ...rest } = p;
-    batch.set(doc(db, 'paket', id), { ...rest, updated_at: serverTimestamp() });
-    batch.set(doc(db, 'paket_tokens', p.token_paket_soal), {
-      paket_id: id,
-      ...rest,
-      updated_at: serverTimestamp(),
-    });
-  });
-
-  const sampleSoal = [
-    {
-      id: 'S1',
-      paket_id: 'pkt_mtk_6',
-      paket: 'Matematika Kelas 6',
-      nomor_soal: 1,
-      jenis_soal: 'PG',
-      teks_stimulus:
-        'Bu Ani membeli 3 kg apel seharga Rp25.000 per kg dan 2 kg jeruk seharga Rp20.000 per kg di pasar.',
-      gambar_stimulus_url: '/src/assets/images/soal_apel_jeruk_1795224176339.jpg',
-      teks_soal: 'Berapa total uang yang harus dibayar Bu Ani?',
-      gambar_soal_url: '',
-      pilihan_a: 'Rp95.000',
-      pilihan_b: 'Rp105.000',
-      pilihan_c: 'Rp115.000',
-      pilihan_d: 'Rp125.000',
-      kunci_jawaban: 'C',
-      pembahasan: 'Apel: 3 x 25.000 = 75.000. Jeruk: 2 x 20.000 = 40.000. Total = 115.000.',
-      bobot: 10,
-      tka_mapel: 'Matematika',
-      tka_elemen: 'Bilangan',
-      tka_subelemen: 'Bilangan Rasional',
-      tka_indikator: 'Operasi penjumlahan, pengurangan, perkalian, dan pembagian bilangan cacah',
-    },
-    {
-      id: 'S2',
-      paket_id: 'pkt_mtk_6',
-      paket: 'Matematika Kelas 6',
-      nomor_soal: 2,
-      jenis_soal: 'PGK MCMA',
-      teks_stimulus: 'Perhatikan deretan bilangan berikut: **12, 15, 18, 21, 25**.',
-      gambar_stimulus_url: '',
-      teks_soal: 'Pilih SEMUA bilangan yang merupakan kelipatan 3.',
-      gambar_soal_url: '',
-      pilihan_a: '12',
-      pilihan_b: '15',
-      pilihan_c: '21',
-      pilihan_d: '25',
-      kunci_jawaban: 'A,B,C',
-      pembahasan: '12, 15, dan 21 habis dibagi 3, sedangkan 25 tidak.',
-      bobot: 10,
-      tka_mapel: 'Matematika',
-      tka_elemen: 'Bilangan',
-      tka_subelemen: 'Bilangan Rasional',
-      tka_indikator: 'Kelipatan, faktor, KPK, dan FPB bilangan asli',
-    },
-    {
-      id: 'S3',
-      paket_id: 'pkt_mtk_6',
-      paket: 'Matematika Kelas 6',
-      nomor_soal: 3,
-      jenis_soal: 'PGK Kategori:Benar/Salah',
-      teks_stimulus:
-        'Kebun Pak Budi berbentuk persegi panjang dengan panjang 20 m dan lebar 15 m.',
-      gambar_stimulus_url: '/src/assets/images/soal_kebun_persegi_1795224175539.jpg',
-      teks_soal: 'Tentukan pernyataan berikut Benar atau Salah.',
-      gambar_soal_url: '',
-      pilihan_a: 'Luas kebun adalah 300 m^{2}',
-      pilihan_b: 'Keliling kebun adalah 70 m',
-      pilihan_c: 'Luas kebun adalah 350 m^{2}',
-      pilihan_d: 'Lebar kebun lebih panjang daripada panjangnya',
-      kunci_jawaban: 'Benar,Benar,Salah,Salah',
-      pembahasan:
-        'Luas = 20 x 15 = 300 m^{2}. Keliling = 2 x (20+15) = 70 m. Lebar (15) lebih pendek dari panjang (20).',
-      bobot: 10,
-      tka_mapel: 'Matematika',
-      tka_elemen: 'Geometri dan Pengukuran',
-      tka_subelemen: 'Pengukuran',
-      tka_indikator: 'Keliling dan luas bangun datar (segitiga, segiempat, dan segi banyak)',
-    },
-  ];
-
-  sampleSoal.forEach((s) => {
-    batch.set(doc(db, 'soal', s.id), {
-      id_soal: s.id,
-      paket_id: s.paket_id,
-      paket: s.paket,
-      nomor_soal: s.nomor_soal,
-      jenis_soal: s.jenis_soal,
-      teks_stimulus: s.teks_stimulus,
-      gambar_stimulus_url: s.gambar_stimulus_url,
-      teks_soal: s.teks_soal,
-      gambar_soal_url: s.gambar_soal_url,
-      pilihan_a: s.pilihan_a,
-      pilihan_b: s.pilihan_b,
-      pilihan_c: s.pilihan_c,
-      pilihan_d: s.pilihan_d,
-      bobot: s.bobot,
-      aktif: true,
-      tka_mapel: s.tka_mapel,
-      tka_elemen: s.tka_elemen,
-      tka_subelemen: s.tka_subelemen,
-      tka_indikator: s.tka_indikator,
-      updated_at: serverTimestamp(),
-    });
-    batch.set(doc(db, 'soal_kunci', s.id), {
-      id_soal: s.id,
-      paket_id: s.paket_id,
-      kunci_jawaban: s.kunci_jawaban,
-      pembahasan: s.pembahasan,
-      bobot: s.bobot,
-      rilis_kunci: true,
-      updated_at: serverTimestamp(),
-    });
-  });
-
-  const sampleSiswa = [
-    { nama: 'Andi Saputra', kelas: '6A' },
-    { nama: 'Siti Rahma', kelas: '6A' },
-    { nama: 'Budi Santoso', kelas: '6B' },
-  ];
-  sampleSiswa.forEach((s) => {
-    const key = slugifyName(s.nama);
-    batch.set(doc(db, 'siswa', key), {
-      nama_siswa: s.nama,
-      nama_key: key,
-      kelas: s.kelas,
-      status_ujian: 'Belum',
-      status_akun: 'Aktif',
-      updated_at: serverTimestamp(),
-    });
-  });
-
-  await batch.commit();
-}
-
-// ===== 1-Click Migration from Old Google Apps Script Web App =====
-async function callLegacyGas(apiUrl: string, fn: string, args: unknown[]): Promise<unknown> {
-  const res = await fetch(apiUrl.trim(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ fn, args }),
-    redirect: 'follow',
-  });
-  const text = await res.text();
-  let json: { ok?: boolean; data?: unknown; error?: string };
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error('Respons Apps Script tidak valid. Pastikan URL /exec dan akses "Anyone".');
-  }
-  if (!json.ok) {
-    throw new Error(json.error || 'Gagal membaca data dari Apps Script.');
-  }
-  return json.data;
-}
-
-function shortHash(input: string): string {
-  let hash = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
-function parseLegacyDate(raw: unknown): Date {
+function parseLegacyDateOrNull(raw: unknown): Date | null {
   if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw;
   if (typeof raw === 'number' && Number.isFinite(raw) && raw > 20000 && raw < 100000) {
-    // Excel serial date
     return new Date(Math.round((raw - 25569) * 86400 * 1000));
   }
   const s = String(raw == null ? '' : raw).trim();
-  if (!s) return new Date();
-  // Format "YYYY-MM-DD HH:mm:ss" or ISO
+  if (!s || s === '-') return null;
   const isoCandidate = s.includes('T') ? s : s.replace(/^(\d{4}-\d{2}-\d{2})\s+/, '$1T');
   const direct = Date.parse(isoCandidate);
   if (!Number.isNaN(direct)) return new Date(direct);
-  // Format "DD/MM/YYYY[ ,]HH[:.]mm[:.]ss"
-  const m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[,\s]+(\d{1,2})[:.](\d{1,2})(?:[:.](\d{1,2}))?)?/);
+  const m = s.match(
+    /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[,\s]+(\d{1,2})[:.](\d{1,2})(?:[:.](\d{1,2}))?)?/
+  );
   if (m) {
     const day = Number(m[1]);
     const month = Number(m[2]) - 1;
@@ -2027,7 +197,7 @@ function parseLegacyDate(raw: unknown): Date {
     const d = new Date(year, month, day, hh, mm, ss);
     if (!Number.isNaN(d.getTime())) return d;
   }
-  return new Date();
+  return null;
 }
 
 function getRowField(row: Record<string, unknown>, candidates: string[]): unknown {
@@ -2046,298 +216,1570 @@ function getRowField(row: Record<string, unknown>, candidates: string[]): unknow
   return '';
 }
 
-export async function importPelanggaranBatch(
-  rawRows: Record<string, unknown>[],
-  paketsInput?: PaketUjian[]
-): Promise<{ added: number; skipped: number }> {
-  try {
-    const pakets = paketsInput || (await listPaket());
-    const paketByName = new Map<string, PaketUjian>();
-    pakets.forEach((p) => {
-      paketByName.set(p.nama_paket_soal.trim().toLowerCase(), p);
-    });
-
-    const existingSnap = await getDocs(collection(db, 'pelanggaran'));
-    const existingIds = new Set(existingSnap.docs.map((d) => d.id));
-
-    const seenCounts = new Map<string, number>();
-    const toWrite: Array<{
-      id: string;
-      data: {
-        siswa_id: string;
-        nama_siswa: string;
-        kelas: string;
-        paket_id: string;
-        paket_nama: string;
-        jenis_pelanggaran: string;
-        status_ujian: string;
-        created_at: Timestamp;
-      };
-    }> = [];
-    let skipped = 0;
-
-    for (const row of rawRows || []) {
-      const nama = String(
-        getRowField(row, ['Nama_Siswa', 'Nama Siswa', 'nama_siswa', 'Nama'])
-      ).trim();
-      if (!nama) {
-        skipped++;
-        continue;
-      }
-      const kelas =
-        String(getRowField(row, ['Kelas', 'kelas'])).trim() || '-';
-      const jenis =
-        String(
-          getRowField(row, ['Jenis_Pelanggaran', 'Jenis Pelanggaran', 'jenis_pelanggaran', 'Jenis'])
-        ).trim() || 'Pelanggaran Ujian';
-      const statusUjian = String(
-        getRowField(row, ['Status_Ujian', 'Status Ujian', 'status_ujian', 'Status'])
-      ).trim();
-      const rawWaktu = getRowField(row, [
-        'Waktu_Kejadian',
-        'Waktu Kejadian',
-        'Timestamp',
-        'Waktu',
-        'created_at',
-      ]);
-      const waktuStr = String(rawWaktu ?? '').trim();
-      const parsedDate = parseLegacyDate(rawWaktu);
-
-      let paketNama = String(
-        getRowField(row, ['Paket', 'Paket Ujian', 'Paket_Ujian', 'Nama_Paket_Soal', 'paket_nama'])
-      ).trim();
-      if (!paketNama && statusUjian) {
-        const matchSedang = statusUjian.match(/^sedang\s+ujian\s*:\s*(.+)$/i);
-        if (matchSedang && matchSedang[1]) {
-          paketNama = matchSedang[1].trim();
-        }
-      }
-
-      const matchedPaket = paketNama
-        ? paketByName.get(paketNama.toLowerCase()) ||
-          pakets.find((p) =>
-            paketNama.toLowerCase().includes(p.nama_paket_soal.trim().toLowerCase())
-          )
-        : undefined;
-
-      const paketId = matchedPaket ? matchedPaket.id : '';
-      const resolvedPaketNama = matchedPaket
-        ? matchedPaket.nama_paket_soal
-        : paketNama || (statusUjian && !/^(belum|selesai)$/i.test(statusUjian) ? statusUjian : '-');
-
-      const siswaId = slugifyName(nama).slice(0, 120);
-      const sig = `${siswaId}|${kelas}|${jenis}|${waktuStr}|${statusUjian}|${resolvedPaketNama}`;
-      const occ = seenCounts.get(sig) || 0;
-      seenCounts.set(sig, occ + 1);
-      const docId = `mig_${shortHash(`${sig}#${occ}`)}`;
-
-      if (existingIds.has(docId)) {
-        skipped++;
-        continue;
-      }
-      existingIds.add(docId);
-
-      toWrite.push({
-        id: docId,
-        data: {
-          siswa_id: siswaId,
-          nama_siswa: nama.slice(0, 120),
-          kelas: kelas.slice(0, 40),
-          paket_id: paketId.slice(0, 128),
-          paket_nama: resolvedPaketNama.slice(0, 160),
-          jenis_pelanggaran: jenis.slice(0, 160),
-          status_ujian: statusUjian.slice(0, 200),
-          created_at: Timestamp.fromDate(parsedDate),
-        },
-      });
-    }
-
-    const chunkSize = 400;
-    for (let i = 0; i < toWrite.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      toWrite.slice(i, i + chunkSize).forEach((item) => {
-        batch.set(doc(db, 'pelanggaran', item.id), item.data);
-      });
-      await batch.commit();
-    }
-
-    return { added: toWrite.length, skipped };
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'pelanggaran');
+function parseDetailJawaban(raw: unknown): Record<string, AnswerValue> {
+  if (!raw) return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as Record<string, AnswerValue>;
   }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, AnswerValue>;
+      }
+    } catch {
+      return {};
+    }
+  }
+  return {};
 }
 
-export async function migratePelanggaranFromGas(
-  apiUrl: string,
-  legacyPassword: string
-): Promise<{ added: number; skipped: number }> {
-  const valid = await callLegacyGas(apiUrl, 'verifyAdminLogin', [legacyPassword]);
-  if (!valid) {
-    throw new Error('Password admin Apps Script salah.');
-  }
-  const rawLog = (await callLegacyGas(apiUrl, 'admin', [
-    legacyPassword,
-    'list',
-    { k: 'log' },
-  ])) as Record<string, unknown>[];
-  return importPelanggaranBatch(rawLog || []);
-}
+// ===== Settings & Tata Tertib =====
 
-export async function migrateFromLegacyGas(
-  apiUrl: string,
-  legacyPassword: string,
-  onProgress?: (msg: string) => void
-): Promise<{ paket: number; soal: number; siswa: number; hasil: number; pelanggaran: number }> {
-  onProgress?.('Memeriksa koneksi ke Apps Script...');
-  const valid = await callLegacyGas(apiUrl, 'verifyAdminLogin', [legacyPassword]);
-  if (!valid) {
-    throw new Error('Password admin Apps Script salah.');
-  }
-
-  onProgress?.('Mengambil pengaturan, paket, soal, siswa, hasil, dan log pelanggaran...');
-  const [settings, rawPaket, rawSoal, rawSiswa, rawHasil, rawLog] = (await Promise.all([
-    callLegacyGas(apiUrl, 'getSettings', []),
-    callLegacyGas(apiUrl, 'admin', [legacyPassword, 'list', { k: 'paket' }]),
-    callLegacyGas(apiUrl, 'admin', [legacyPassword, 'list', { k: 'soal' }]),
-    callLegacyGas(apiUrl, 'admin', [legacyPassword, 'list', { k: 'siswa' }]),
-    callLegacyGas(apiUrl, 'admin', [legacyPassword, 'list', { k: 'hasil' }]),
-    callLegacyGas(apiUrl, 'admin', [legacyPassword, 'list', { k: 'log' }]).catch(() => []),
-  ])) as [
-    Record<string, string>,
-    Record<string, unknown>[],
-    Record<string, unknown>[],
-    Record<string, unknown>[],
-    Record<string, unknown>[],
-    Record<string, unknown>[]
-  ];
-
-  if (settings && settings.judul) {
-    onProgress?.('Menyimpan pengaturan sekolah...');
-    await savePengaturan({
-      judul: String(settings.judul || DEFAULT_PENGATURAN.judul),
-      subjudul: String(settings.subjudul ?? DEFAULT_PENGATURAN.subjudul),
-      judul_admin: String(settings.judul_admin || 'Admin CBT'),
-      subjudul_admin: String(settings.subjudul_admin ?? ''),
-      logo: String(settings.logo || ''),
-    });
-  }
-
-  const paketMap = new Map<string, PaketUjian>();
-  let paketCount = 0;
-  onProgress?.(`Memigrasikan ${rawPaket.length} paket soal...`);
-  for (const p of rawPaket || []) {
-    const nama = String(p.Nama_Paket_Soal || '').trim();
-    if (!nama) continue;
-    const token = String(p.Token_Paket_Soal || generateRandomToken())
-      .trim()
-      .toUpperCase()
-      .replace(/[^A-Z0-9_-]/g, '');
-    const id = `pkt_${slugifyName(nama).slice(0, 60)}`;
-    const paketObj: PaketUjian = {
-      id,
-      nama_paket_soal: nama,
-      mata_pelajaran: String(p.Mata_Pelajaran || 'Umum').trim() || 'Umum',
-      durasi_menit: Number(p['Durasi_(Menit)']) || 60,
-      status: p.Status === 'Aktif' ? 'Aktif' : 'Nonaktif',
-      token_paket_soal: token,
-      waktu_mulai: String(p.Waktu_Mulai || ''),
-      waktu_berakhir: String(p.Waktu_Berakhir || ''),
-      tampilkan_nilai: true,
-      acak_soal: false,
-    };
-    await savePaket(paketObj);
-    paketMap.set(nama.toLowerCase(), paketObj);
-    paketCount++;
-  }
-
-  onProgress?.(`Memigrasikan ${rawSoal.length} butir soal...`);
-  let soalCount = 0;
-  for (const [namaLower, pkt] of paketMap.entries()) {
-    const matching = (rawSoal || []).filter(
-      (q) => String(q.Paket || '').trim().toLowerCase() === namaLower
+export async function getPengaturan(forceRefresh = false): Promise<Pengaturan> {
+  if (!forceRefresh) {
+    const cached = readJsonStorage<{ ts: number; data: Pengaturan } | null>(
+      LS_PENGATURAN_CACHE,
+      null
     );
-    if (matching.length > 0) {
-      await importSoalBatch(
-        matching.map((q, idx) => ({
-          id_soal: safeDocId(q.ID_Soal || `S_${pkt.id}_${idx + 1}`),
-          nomor_soal: Number(q.Nomor_Soal) || idx + 1,
-          jenis_soal: String(q.Jenis_Soal || 'PG'),
-          teks_stimulus: String(q.Teks_Stimulus || ''),
-          gambar_stimulus_url: String(q.Gambar_Stimulus_URL || ''),
-          teks_soal: String(q.Teks_Soal || ''),
-          gambar_soal_url: String(q.Gambar_Soal_URL || ''),
-          pilihan_a: String(q.Pilihan_A || ''),
-          pilihan_b: String(q.Pilihan_B || ''),
-          pilihan_c: String(q.Pilihan_C || ''),
-          pilihan_d: String(q.Pilihan_D || ''),
-          kunci_jawaban: String(q.Kunci_Jawaban || ''),
-          pembahasan: String(q.Pembahasan || ''),
-          bobot: Number(q.Bobot) || 1,
-        })),
-        pkt
-      );
-      soalCount += matching.length;
+    if (cached && cached.data && Date.now() - cached.ts < PENGATURAN_CACHE_TTL_MS) {
+      return cached.data;
     }
   }
 
-  onProgress?.(`Memigrasikan ${rawSiswa.length} data siswa...`);
-  const existingSiswa = await listSiswa();
-  const resSiswa = await importSiswaBatch(
-    (rawSiswa || []).map((s) => ({
-      nama_siswa: String(s.Nama_Siswa || ''),
-      kelas: String(s.Kelas || '-'),
-      status_akun: String(s.Status_Akun || 'Aktif'),
-    })),
-    existingSiswa
-  );
-
-  onProgress?.(`Memigrasikan ${rawHasil.length} riwayat hasil ujian...`);
-  let hasilCount = 0;
-  const hasilItems = (rawHasil || []).filter((h) => {
-    const pName = String(h.Paket || '').trim().toLowerCase();
-    return paketMap.has(pName) && String(h.Nama_Siswa || '').trim() !== '';
+  return withSharedCache('pengaturan', forceRefresh ? 0 : PENGATURAN_CACHE_TTL_MS, async () => {
+    try {
+      const d = await callGas<Record<string, unknown>>('getSettings', []);
+      if (!d || typeof d !== 'object') return DEFAULT_PENGATURAN;
+      const cfg: Pengaturan = {
+        judul: String(d.judul || DEFAULT_PENGATURAN.judul),
+        subjudul: d.subjudul != null ? String(d.subjudul) : DEFAULT_PENGATURAN.subjudul,
+        judul_admin: d.judul_admin != null ? String(d.judul_admin) : DEFAULT_PENGATURAN.judul_admin,
+        subjudul_admin:
+          d.subjudul_admin != null ? String(d.subjudul_admin) : DEFAULT_PENGATURAN.subjudul_admin,
+        logo: d.logo ? String(d.logo) : DEFAULT_PENGATURAN.logo,
+      };
+      writeJsonStorage(LS_PENGATURAN_CACHE, { ts: Date.now(), data: cfg });
+      return cfg;
+    } catch (err) {
+      const stale = readJsonStorage<{ ts: number; data: Pengaturan } | null>(
+        LS_PENGATURAN_CACHE,
+        null
+      );
+      if (stale?.data) return stale.data;
+      console.warn('Fallback ke pengaturan default:', err);
+      return DEFAULT_PENGATURAN;
+    }
   });
+}
 
-  const chunkSize = 400;
-  for (let i = 0; i < hasilItems.length; i += chunkSize) {
-    const batch = writeBatch(db);
-    hasilItems.slice(i, i + chunkSize).forEach((h) => {
-      const pkt = paketMap.get(String(h.Paket || '').trim().toLowerCase())!;
-      const siswaId = slugifyName(h.Nama_Siswa);
-      const docId = `${pkt.id}__${siswaId}`;
-      let detail: Record<string, AnswerValue> = {};
-      try {
-        detail = JSON.parse(String(h.Detail_Jawaban_JSON || '{}'));
-      } catch {
-        detail = {};
-      }
-      batch.set(doc(db, 'hasil', docId), {
-        paket_id: pkt.id,
-        paket: pkt.nama_paket_soal,
-        siswa_id: siswaId,
-        nama_siswa: String(h.Nama_Siswa),
-        kelas: String(h.Kelas || '-'),
-        nilai_akhir: Number(h.Nilai_Akhir) || 0,
-        total_benar: Number(h.Total_Benar) || 0,
-        total_salah: Number(h.Total_Salah) || 0,
-        pelanggaran_tab: Number(h.Pelanggaran_Tab) || 0,
-        detail_jawaban: detail,
-        status_penilaian: 'dinilai',
-        created_at: serverTimestamp(),
-      });
-      hasilCount++;
-    });
-    await batch.commit();
+export async function savePengaturan(cfg: Pengaturan): Promise<void> {
+  const uploadedLogo = cfg.logo
+    ? await uploadDataUrlFieldToGas(cfg.logo, 'logo_sekolah')
+    : '';
+  const savedCfg: Pengaturan = {
+    judul: cfg.judul.trim() || DEFAULT_PENGATURAN.judul,
+    subjudul: cfg.subjudul ?? '',
+    judul_admin: cfg.judul_admin ?? 'Admin CBT',
+    subjudul_admin: cfg.subjudul_admin ?? '',
+    logo: uploadedLogo,
+  };
+  await callGasAdmin('setting', savedCfg as unknown as Record<string, unknown>);
+  writeJsonStorage(LS_PENGATURAN_CACHE, { ts: Date.now(), data: savedCfg });
+  invalidateAdminCaches(['pengaturan']);
+}
+
+export async function getTataTertib(): Promise<TataTertib[]> {
+  const stored = readJsonStorage<string[]>(LS_TATA_TERTIB, []);
+  const lines = Array.isArray(stored) && stored.length > 0 ? stored : DEFAULT_TATA_TERTIB;
+  return lines.map((teks, idx) => ({
+    id: `tib_${idx + 1}`,
+    no: idx + 1,
+    teks: String(teks),
+  }));
+}
+
+export async function saveTataTertibList(items: { no: number; teks: string }[]): Promise<void> {
+  const clean = items.map((i) => i.teks.trim()).filter(Boolean);
+  writeJsonStorage(LS_TATA_TERTIB, clean);
+}
+
+// ===== Student Exam Flow =====
+
+interface GasVerifyStudentResponse {
+  ok: boolean;
+  msg?: string;
+  nama?: string;
+  kelas?: string;
+  token?: string;
+  paket?: {
+    nama?: string;
+    nama_paket_soal?: string;
+    mapel?: string;
+    mata_pelajaran?: string;
+    durasi?: number;
+    durasi_menit?: number;
+    waktu_mulai?: string;
+    waktu_berakhir?: string;
+    tampilkan_nilai?: boolean;
+    acak_soal?: boolean;
+  };
+  tib?: string[];
+  resume?: boolean;
+  progres?: {
+    jawaban?: Record<string, unknown>;
+    sisa?: number;
+    viol?: number;
+    t?: number;
+  } | null;
+}
+
+export async function verifyStudentLogin(
+  namaInput: string,
+  tokenInput: string
+): Promise<{ ok: true; session: ActiveStudentSession } | { ok: false; msg: string }> {
+  const cleanNama = namaInput.trim();
+  const token = tokenInput.trim().toUpperCase();
+
+  if (!cleanNama) return { ok: false, msg: 'Masukkan nama lengkap Anda.' };
+  if (!token) return { ok: false, msg: 'Masukkan token paket soal.' };
+
+  const res = await callGas<GasVerifyStudentResponse>('verifyStudentLogin', [cleanNama, token]);
+  if (!res || !res.ok || !res.paket) {
+    return { ok: false, msg: res?.msg || 'Nama atau token tidak valid.' };
   }
 
-  onProgress?.(`Memigrasikan ${(rawLog || []).length} log pelanggaran...`);
-  const resPel = await importPelanggaranBatch(rawLog || [], Array.from(paketMap.values()));
+  const namaPaket = String(res.paket.nama || res.paket.nama_paket_soal || '');
+  const paketId = makePaketId(namaPaket);
+  const prefs = getPaketPrefsMap()[paketId] || {};
+
+  const paket: PaketUjian = {
+    id: paketId,
+    nama_paket_soal: namaPaket,
+    mata_pelajaran: String(res.paket.mapel || res.paket.mata_pelajaran || ''),
+    durasi_menit: Number(res.paket.durasi || res.paket.durasi_menit) || 60,
+    status: 'Aktif',
+    token_paket_soal: String(res.token || token),
+    waktu_mulai: String(res.paket.waktu_mulai || ''),
+    waktu_berakhir: String(res.paket.waktu_berakhir || ''),
+    tampilkan_nilai:
+      res.paket.tampilkan_nilai !== undefined
+        ? Boolean(res.paket.tampilkan_nilai)
+        : prefs.tampilkan_nilai !== false,
+    acak_soal:
+      res.paket.acak_soal !== undefined
+        ? Boolean(res.paket.acak_soal)
+        : prefs.acak_soal === true,
+  };
+
+  const namaSiswa = String(res.nama || cleanNama);
+  const siswaKey = slugifyName(namaSiswa);
+  const siswa: Siswa = {
+    id: siswaKey,
+    nama_siswa: namaSiswa,
+    nama_key: siswaKey,
+    kelas: String(res.kelas || '-'),
+    status_ujian: res.resume ? `Sedang Ujian: ${namaPaket}` : 'Belum',
+    status_akun: 'Aktif',
+  };
+
+  if (Array.isArray(res.tib) && res.tib.length > 0) {
+    writeJsonStorage(
+      LS_TATA_TERTIB,
+      res.tib.map((t) => String(t).trim()).filter(Boolean)
+    );
+  }
+  const tibLines =
+    Array.isArray(res.tib) && res.tib.length > 0 ? res.tib : DEFAULT_TATA_TERTIB;
+  const tib: TataTertib[] = tibLines.map((teks, idx) => ({
+    id: `tib_${idx + 1}`,
+    no: idx + 1,
+    teks: String(teks),
+  }));
+
+  let progres: ProgresUjian | null = null;
+  if (res.resume && res.progres) {
+    const rawAns = { ...(res.progres.jawaban || {}) };
+    const ragu =
+      rawAns.__ragu && typeof rawAns.__ragu === 'object'
+        ? (rawAns.__ragu as Record<string, boolean>)
+        : {};
+    const currentIndex = typeof rawAns.__i === 'number' ? rawAns.__i : 0;
+    delete rawAns.__ragu;
+    delete rawAns.__i;
+
+    const cleanAns: Record<string, AnswerValue> = {};
+    Object.entries(rawAns).forEach(([k, v]) => {
+      if (typeof v === 'string' || Array.isArray(v)) {
+        cleanAns[k] = v as AnswerValue;
+      }
+    });
+
+    progres = {
+      id: `${paketId}__${siswaKey}`,
+      paket_id: paketId,
+      paket_nama: namaPaket,
+      siswa_id: siswaKey,
+      nama_siswa: namaSiswa,
+      kelas: siswa.kelas,
+      jawaban: cleanAns,
+      ragu,
+      current_index: currentIndex,
+      sisa_detik: Number(res.progres.sisa) || paket.durasi_menit * 60,
+      pelanggaran: Number(res.progres.viol) || 0,
+    };
+  }
 
   return {
-    paket: paketCount,
-    soal: soalCount,
-    siswa: resSiswa.added,
-    hasil: hasilCount,
-    pelanggaran: resPel.added,
+    ok: true,
+    session: {
+      siswa,
+      paket,
+      tib,
+      resume: Boolean(res.resume),
+      progres,
+    },
   };
+}
+
+export async function markStudentExamStarted(_paket: PaketUjian, _siswa: Siswa): Promise<void> {
+  // Handled by verifyStudentLogin & saveProgress on Apps Script
+}
+
+export async function getQuestionsForStudent(
+  paket: PaketUjian,
+  siswaKey: string
+): Promise<SoalPublik[]> {
+  const cacheKey = `${LS_SOAL_CACHE_PREFIX}${paket.token_paket_soal}`;
+  const cached = readJsonStorage<{ ts: number; list: SoalPublik[] } | null>(cacheKey, null);
+
+  let baseList: SoalPublik[] | null = null;
+  if (cached && Array.isArray(cached.list) && cached.list.length > 0 && Date.now() - cached.ts < SOAL_CACHE_TTL_MS) {
+    baseList = cached.list;
+  }
+
+  if (!baseList) {
+    try {
+      const raw = await withSharedCache(`student_qs_${paket.token_paket_soal}`, 15000, () =>
+        callGas<string | Record<string, unknown>[]>('getQuestionsForStudent', [
+          paket.token_paket_soal,
+        ])
+      );
+      const arr =
+        typeof raw === 'string' ? (JSON.parse(raw) as Record<string, unknown>[]) : raw || [];
+
+      baseList = arr
+        .map((x, idx) => {
+          const idSoal = String(x.ID_Soal || `S_${idx + 1}`);
+          return {
+            id: idSoal,
+            id_soal: idSoal,
+            paket_id: paket.id,
+            paket: String(x.Paket || paket.nama_paket_soal),
+            nomor_soal: Number(x.Nomor_Soal) || idx + 1,
+            jenis_soal: String(x.Jenis_Soal || 'PG'),
+            teks_stimulus: String(x.Teks_Stimulus || ''),
+            gambar_stimulus_url: String(x.Gambar_Stimulus_URL || ''),
+            teks_soal: String(x.Teks_Soal || ''),
+            gambar_soal_url: String(x.Gambar_Soal_URL || ''),
+            pilihan_a: String(x.Pilihan_A || ''),
+            pilihan_b: String(x.Pilihan_B || ''),
+            pilihan_c: String(x.Pilihan_C || ''),
+            pilihan_d: String(x.Pilihan_D || ''),
+            bobot: Number(x.Bobot) || 1,
+            aktif: true,
+          };
+        })
+        .sort((a, b) => a.nomor_soal - b.nomor_soal);
+
+      if (baseList.length > 0) {
+        writeJsonStorage(cacheKey, { ts: Date.now(), list: baseList });
+      }
+    } catch (err) {
+      if (cached && Array.isArray(cached.list) && cached.list.length > 0) {
+        baseList = cached.list;
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  if (!baseList || baseList.length === 0) {
+    throw new Error(`Belum ada soal aktif untuk paket "${paket.nama_paket_soal}".`);
+  }
+
+  return paket.acak_soal ? seededShuffle(baseList, `${paket.id}_${siswaKey}`) : baseList;
+}
+
+export async function saveStudentProgress(params: {
+  paket: PaketUjian;
+  siswa: Siswa;
+  jawaban: Record<string, AnswerValue>;
+  ragu: Record<string, boolean>;
+  currentIndex: number;
+  sisaDetik: number;
+  pelanggaran: number;
+}): Promise<boolean> {
+  const { paket, siswa, jawaban, ragu, currentIndex, sisaDetik, pelanggaran } = params;
+  const payloadAns: Record<string, unknown> = {
+    ...jawaban,
+    __ragu: ragu,
+    __i: Math.max(0, Math.floor(currentIndex)),
+  };
+  const ok = await callGas<boolean>('saveProgress', [
+    siswa.nama_siswa,
+    paket.token_paket_soal,
+    payloadAns,
+    Math.max(0, Math.floor(sisaDetik)),
+    Math.max(0, Math.floor(pelanggaran)),
+  ]);
+  return ok !== false;
+}
+
+export async function logStudentViolation(params: {
+  siswa: Siswa;
+  paket: PaketUjian;
+  jenis: string;
+}): Promise<void> {
+  try {
+    await callGas('logViolation', [params.siswa.nama_siswa, params.jenis]);
+  } catch (err) {
+    console.warn('Gagal mencatat log pelanggaran:', err);
+  }
+}
+
+interface GasSubmitResponse {
+  nilai?: number;
+  benar?: number;
+  salah?: number;
+  rev?: Array<{
+    no: number;
+    soal?: string;
+    jawab?: string;
+    kunci?: string;
+    skor?: number;
+    maks?: number;
+    benar?: boolean;
+    pembahasan?: string;
+  }>;
+}
+
+export async function submitStudentExam(params: {
+  paket: PaketUjian;
+  siswa: Siswa;
+  questions: SoalPublik[];
+  jawaban: Record<string, AnswerValue>;
+  pelanggaran: number;
+  onRetry?: (attempt: number, maxTry: number) => void;
+}): Promise<ExamSubmitResult> {
+  const { paket, siswa, questions, jawaban, pelanggaran, onRetry } = params;
+  const res = await callGas<GasSubmitResponse>(
+    'submitStudentExam',
+    [
+      siswa.nama_siswa,
+      paket.token_paket_soal,
+      jawaban,
+      Math.max(0, Math.floor(pelanggaran)),
+    ],
+    undefined,
+    { onRetry }
+  );
+
+  const byNo = new Map(questions.map((q) => [q.nomor_soal, q]));
+  const rawRev = Array.isArray(res?.rev) ? res.rev : [];
+
+  return {
+    nilai: Number(res?.nilai) || 0,
+    benar: Number(res?.benar) || 0,
+    salah: Number(res?.salah) || 0,
+    tampilkan_nilai: paket.tampilkan_nilai,
+    rev: paket.tampilkan_nilai
+      ? rawRev.map((r) => {
+          const matched = byNo.get(Number(r.no));
+          return {
+            id_soal: matched?.id_soal || `rev_${r.no}`,
+            no: Number(r.no) || 0,
+            soal: String(r.soal || matched?.teks_soal || ''),
+            jawab: String(r.jawab || '-'),
+            kunci: String(r.kunci || ''),
+            skor: Number(r.skor) || 0,
+            maks: Number(r.maks) || matched?.bobot || 1,
+            benar: Boolean(r.benar),
+            pembahasan: String(r.pembahasan || ''),
+          };
+        })
+      : [],
+  };
+}
+
+// ===== Admin Authentication (Google Apps Script Admin Sheet) =====
+
+export async function getAdminAuthStatus(): Promise<{ initialized: boolean; error?: string }> {
+  return { initialized: true };
+}
+
+export async function setupInitialAdminPassword(password: string): Promise<void> {
+  await loginAdminWithPassword(password);
+}
+
+export async function loginAdminWithPassword(password: string): Promise<void> {
+  const cleanPw = password.trim();
+  if (!cleanPw) {
+    throw new Error('Masukkan password admin.');
+  }
+  const ok = await callGas<boolean>('verifyAdminLogin', [cleanPw]);
+  if (!ok) {
+    throw new Error('Password admin salah.');
+  }
+  setAdminSessionPw(cleanPw);
+}
+
+export async function checkIsCurrentAdminSession(): Promise<boolean> {
+  const pw = getAdminSessionPw();
+  if (!pw) return false;
+  try {
+    const ok = await callGas<boolean>('verifyAdminLogin', [pw]);
+    if (!ok) {
+      clearAdminSessionPw();
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function logoutAdminSession(): Promise<void> {
+  clearAdminSessionPw();
+}
+
+export async function listAdminPassLabels(): Promise<AdminPassLabel[]> {
+  const rows = await callGasAdmin<Array<{ _row?: number; Password?: unknown }>>('list', {
+    k: 'adm',
+  });
+  return (rows || []).map((r, idx) => ({
+    id: String(r._row || idx + 1),
+    label: `Password Admin #${idx + 1}`,
+    verifier: String(r.Password || ''),
+    created_at: null,
+  }));
+}
+
+export async function addAdminPasscode(_label: string, password: string): Promise<void> {
+  const cleanPw = password.trim();
+  if (cleanPw.length < 3) {
+    throw new Error('Password minimal 3 karakter.');
+  }
+  await callGasAdmin('save', {
+    k: 'adm',
+    o: { Password: cleanPw },
+  });
+}
+
+export async function deleteAdminPasscode(passId: string, _verifier: string): Promise<void> {
+  const row = Number(passId);
+  if (!Number.isFinite(row) || row < 2) {
+    throw new Error('Baris password admin tidak valid.');
+  }
+  await callGasAdmin('del', { k: 'adm', row });
+}
+
+// ===== Paket Ujian CRUD =====
+
+export async function listPaket(): Promise<PaketUjian[]> {
+  return withSharedCache('list_paket', 30000, async () => {
+    const rows = await callGasAdmin<Array<Record<string, unknown>>>('list', { k: 'paket' });
+    const prefsMap = getPaketPrefsMap();
+    paketRowById.clear();
+    paketNameById.clear();
+
+    const seenIds = new Set<string>();
+    return (rows || []).map((x, idx) => {
+      const nama = String(x.Nama_Paket_Soal || '').trim();
+      let id = makePaketId(nama || `paket_${idx + 1}`);
+      if (seenIds.has(id)) id = `${id}_${x._row || idx + 1}`;
+      seenIds.add(id);
+
+      if (typeof x._row === 'number') paketRowById.set(id, x._row);
+      paketNameById.set(id, nama);
+
+      const prefs = prefsMap[id] || {};
+      return {
+        id,
+        nama_paket_soal: nama,
+        mata_pelajaran: String(x.Mata_Pelajaran || ''),
+        durasi_menit: Number(x['Durasi_(Menit)']) || 60,
+        status: x.Status === 'Aktif' ? 'Aktif' : 'Nonaktif',
+        token_paket_soal: String(x.Token_Paket_Soal || ''),
+        waktu_mulai: String(x.Waktu_Mulai || ''),
+        waktu_berakhir: String(x.Waktu_Berakhir || ''),
+        tampilkan_nilai: prefs.tampilkan_nilai !== false,
+        acak_soal: prefs.acak_soal === true,
+      };
+    });
+  });
+}
+
+export async function savePaket(
+  paket: Omit<PaketUjian, 'id'> & { id?: string },
+  _oldToken?: string
+): Promise<string> {
+  const nama = paket.nama_paket_soal.trim();
+  const token = (paket.token_paket_soal || generateRandomToken())
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, '');
+
+  let row = paket.id ? paketRowById.get(paket.id) : undefined;
+  if (paket.id && row === undefined) {
+    await listPaket();
+    row = paketRowById.get(paket.id);
+  }
+
+  const o = {
+    Nama_Paket_Soal: nama,
+    Mata_Pelajaran: paket.mata_pelajaran.trim(),
+    'Durasi_(Menit)': Math.max(1, Math.min(600, Math.round(Number(paket.durasi_menit) || 60))),
+    Status: paket.status === 'Aktif' ? 'Aktif' : 'Nonaktif',
+    Token_Paket_Soal: token,
+    Waktu_Mulai: paket.waktu_mulai || '',
+    Waktu_Berakhir: paket.waktu_berakhir || '',
+  };
+
+  await callGasAdmin('save', row ? { k: 'paket', row, o } : { k: 'paket', o });
+  invalidateAdminCaches(['list_paket']);
+
+  const newId = makePaketId(nama);
+  savePaketPrefs(newId, {
+    tampilkan_nilai: paket.tampilkan_nilai !== false,
+    acak_soal: paket.acak_soal === true,
+  });
+
+  return newId;
+}
+
+export async function deletePaket(paket: PaketUjian): Promise<void> {
+  let row = paketRowById.get(paket.id);
+  if (row === undefined) {
+    await listPaket();
+    row = paketRowById.get(paket.id);
+  }
+  if (row === undefined) {
+    throw new Error(`Paket "${paket.nama_paket_soal}" tidak ditemukan di Spreadsheet.`);
+  }
+  // Hapus seluruh soal milik paket terlebih dahulu
+  await callGasAdmin('delSoal', { v: paket.nama_paket_soal, all: 1 }).catch(() => undefined);
+  await callGasAdmin('del', { k: 'paket', row });
+  invalidateAdminCaches(['list_paket', 'list_soal']);
+}
+
+export async function copyPaketWithSoal(
+  src: PaketUjian,
+  _allPakets: PaketUjian[]
+): Promise<PaketUjian> {
+  const res = await callGasAdmin<{ nama?: string; soal?: number }>('copyPaket', {
+    v: src.nama_paket_soal,
+  });
+  invalidateAdminCaches(['list_paket', 'list_soal']);
+  const pakets = await listPaket();
+  const copied = res?.nama
+    ? pakets.find((p) => p.nama_paket_soal === res.nama)
+    : undefined;
+  if (copied) {
+    savePaketPrefs(copied.id, {
+      tampilkan_nilai: src.tampilkan_nilai,
+      acak_soal: src.acak_soal,
+    });
+    return {
+      ...copied,
+      tampilkan_nilai: src.tampilkan_nilai,
+      acak_soal: src.acak_soal,
+    };
+  }
+  const fallbackName = res?.nama || `${src.nama_paket_soal} (Salinan)`;
+  return {
+    id: makePaketId(fallbackName),
+    nama_paket_soal: fallbackName,
+    mata_pelajaran: src.mata_pelajaran,
+    durasi_menit: src.durasi_menit,
+    status: 'Nonaktif',
+    token_paket_soal: generateRandomToken(),
+    waktu_mulai: src.waktu_mulai,
+    waktu_berakhir: src.waktu_berakhir,
+    tampilkan_nilai: src.tampilkan_nilai,
+    acak_soal: src.acak_soal,
+  };
+}
+
+// ===== Bank Soal CRUD & TKA =====
+
+export async function listSoalLengkap(paketId?: string): Promise<SoalLengkap[]> {
+  if (paketNameById.size === 0) {
+    await listPaket();
+  }
+  const nameToPaketId = new Map<string, string>();
+  paketNameById.forEach((nama, id) => {
+    nameToPaketId.set(nama.trim().toLowerCase(), id);
+  });
+
+  const mapped = await withSharedCache('list_soal', 30000, async () => {
+    const rows = await callGasAdmin<Array<Record<string, unknown>>>('list', { k: 'soal' });
+    const tkaMap = getTkaOverridesMap();
+    soalRowById.clear();
+    soalRawById.clear();
+
+    return (rows || []).map((x, idx) => {
+      const idSoal = String(x.ID_Soal || `S_${x._row || idx + 1}`);
+      const paketNama = String(x.Paket || '').trim();
+      const resolvedPaketId =
+        nameToPaketId.get(paketNama.toLowerCase()) || makePaketId(paketNama || 'umum');
+
+      if (typeof x._row === 'number') soalRowById.set(idSoal, x._row);
+      soalRawById.set(idSoal, x);
+
+      const tka = tkaMap[idSoal];
+      return {
+        id: idSoal,
+        id_soal: idSoal,
+        paket_id: resolvedPaketId,
+        paket: paketNama,
+        nomor_soal: Number(x.Nomor_Soal) || idx + 1,
+        jenis_soal: String(x.Jenis_Soal || 'PG'),
+        teks_stimulus: String(x.Teks_Stimulus || ''),
+        gambar_stimulus_url: String(x.Gambar_Stimulus_URL || ''),
+        teks_soal: String(x.Teks_Soal || ''),
+        gambar_soal_url: String(x.Gambar_Soal_URL || ''),
+        pilihan_a: String(x.Pilihan_A || ''),
+        pilihan_b: String(x.Pilihan_B || ''),
+        pilihan_c: String(x.Pilihan_C || ''),
+        pilihan_d: String(x.Pilihan_D || ''),
+        bobot: Number(x.Bobot) || 1,
+        aktif: true,
+        tka_mapel: tka?.tka_mapel || '',
+        tka_elemen: tka?.tka_elemen || '',
+        tka_subelemen: tka?.tka_subelemen || '',
+        tka_indikator: tka?.tka_indikator || '',
+        kunci_jawaban: String(x.Kunci_Jawaban || ''),
+        pembahasan: String(x.Pembahasan || ''),
+        rilis_kunci: true,
+      } satisfies SoalLengkap;
+    });
+  });
+
+  const filtered = paketId ? mapped.filter((q) => q.paket_id === paketId) : mapped;
+  return [...filtered].sort((a, b) => a.nomor_soal - b.nomor_soal);
+}
+
+async function normalizeSoalImages(soal: Partial<SoalLengkap>): Promise<{
+  gambar_stimulus_url: string;
+  gambar_soal_url: string;
+  pilihan_a: string;
+  pilihan_b: string;
+  pilihan_c: string;
+  pilihan_d: string;
+}> {
+  const [gStim, gSoal, pA, pB, pC, pD] = await Promise.all([
+    uploadDataUrlFieldToGas(soal.gambar_stimulus_url || '', 'stim'),
+    uploadDataUrlFieldToGas(soal.gambar_soal_url || '', 'soal'),
+    uploadDataUrlFieldToGas(soal.pilihan_a || '', 'opsiA'),
+    uploadDataUrlFieldToGas(soal.pilihan_b || '', 'opsiB'),
+    uploadDataUrlFieldToGas(soal.pilihan_c || '', 'opsiC'),
+    uploadDataUrlFieldToGas(soal.pilihan_d || '', 'opsiD'),
+  ]);
+  return {
+    gambar_stimulus_url: gStim,
+    gambar_soal_url: gSoal,
+    pilihan_a: pA,
+    pilihan_b: pB,
+    pilihan_c: pC,
+    pilihan_d: pD,
+  };
+}
+
+export async function saveSoal(
+  soal: Omit<SoalLengkap, 'id'> & { id?: string },
+  paket: PaketUjian
+): Promise<void> {
+  const idSoal = (soal.id_soal || soal.id || `S${Date.now()}`).trim();
+  const imgs = await normalizeSoalImages(soal);
+
+  let row = soalRowById.get(idSoal);
+  if (soal.id && row === undefined) {
+    await listSoalLengkap();
+    row = soalRowById.get(idSoal);
+  }
+
+  const o = {
+    ID_Soal: idSoal,
+    Paket: paket.nama_paket_soal,
+    Nomor_Soal: Number(soal.nomor_soal) || 1,
+    Jenis_Soal: soal.jenis_soal || 'PG',
+    Teks_Stimulus: soal.teks_stimulus || '',
+    Gambar_Stimulus_URL: imgs.gambar_stimulus_url,
+    Teks_Soal: soal.teks_soal || '',
+    Gambar_Soal_URL: imgs.gambar_soal_url,
+    Pilihan_A: imgs.pilihan_a,
+    Pilihan_B: imgs.pilihan_b,
+    Pilihan_C: imgs.pilihan_c,
+    Pilihan_D: imgs.pilihan_d,
+    Kunci_Jawaban: soal.kunci_jawaban || '',
+    Pembahasan: soal.pembahasan || '',
+    Bobot: Number(soal.bobot) || 1,
+  };
+
+  await callGasAdmin('save', row ? { k: 'soal', row, o } : { k: 'soal', o });
+  invalidateAdminCaches(['list_soal']);
+
+  if (soal.tka_elemen || soal.tka_subelemen || soal.tka_indikator) {
+    const tkaAll = getTkaOverridesMap();
+    tkaAll[idSoal] = {
+      tka_mapel: soal.tka_mapel || '',
+      tka_elemen: soal.tka_elemen || '',
+      tka_subelemen: soal.tka_subelemen || '',
+      tka_indikator: soal.tka_indikator || '',
+    };
+    writeJsonStorage(LS_TKA_OVERRIDES, tkaAll);
+  }
+}
+
+export async function updateSoalTkaBatch(
+  updates: {
+    id: string;
+    tka_mapel: string;
+    tka_elemen: string;
+    tka_subelemen: string;
+    tka_indikator: string;
+  }[]
+): Promise<number> {
+  if (updates.length === 0) return 0;
+  const all = getTkaOverridesMap();
+  updates.forEach((u) => {
+    all[u.id] = {
+      tka_mapel: u.tka_mapel.slice(0, 80),
+      tka_elemen: u.tka_elemen.slice(0, 160),
+      tka_subelemen: u.tka_subelemen.slice(0, 200),
+      tka_indikator: u.tka_indikator.slice(0, 300),
+    };
+  });
+  writeJsonStorage(LS_TKA_OVERRIDES, all);
+  return updates.length;
+}
+
+export async function importSoalBatch(
+  items: Partial<SoalLengkap>[],
+  paket: PaketUjian
+): Promise<number> {
+  const chunkSize = 25;
+  let total = 0;
+  const baseTs = Date.now();
+  const tkaAll = getTkaOverridesMap();
+  let tkaChanged = false;
+
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const gasRows: Record<string, unknown>[] = [];
+
+    for (let idx = 0; idx < chunk.length; idx++) {
+      const item = chunk[idx];
+      const globalIdx = i + idx;
+      const idSoal = (item.id_soal || `S${baseTs}_${globalIdx}`).trim();
+      const imgs = await normalizeSoalImages(item);
+
+      if (item.tka_elemen || item.tka_subelemen || item.tka_indikator) {
+        tkaAll[idSoal] = {
+          tka_mapel: item.tka_mapel || '',
+          tka_elemen: item.tka_elemen || '',
+          tka_subelemen: item.tka_subelemen || '',
+          tka_indikator: item.tka_indikator || '',
+        };
+        tkaChanged = true;
+      }
+
+      gasRows.push({
+        ID_Soal: idSoal,
+        Paket: paket.nama_paket_soal,
+        Nomor_Soal: Number(item.nomor_soal) || globalIdx + 1,
+        Jenis_Soal: item.jenis_soal || 'PG',
+        Teks_Stimulus: item.teks_stimulus || '',
+        Gambar_Stimulus_URL: imgs.gambar_stimulus_url,
+        Teks_Soal: item.teks_soal || '',
+        Gambar_Soal_URL: imgs.gambar_soal_url,
+        Pilihan_A: imgs.pilihan_a,
+        Pilihan_B: imgs.pilihan_b,
+        Pilihan_C: imgs.pilihan_c,
+        Pilihan_D: imgs.pilihan_d,
+        Kunci_Jawaban: item.kunci_jawaban || '',
+        Pembahasan: item.pembahasan || '',
+        Bobot: Number(item.bobot) || 1,
+      });
+    }
+
+    await callGasAdmin('importSoal', { list: gasRows });
+    total += gasRows.length;
+  }
+
+  if (tkaChanged) {
+    writeJsonStorage(LS_TKA_OVERRIDES, tkaAll);
+  }
+  invalidateAdminCaches(['list_soal']);
+  return total;
+}
+
+export async function deleteSoalByIds(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const missing = ids.some((id) => !soalRawById.has(id));
+  if (missing) {
+    await listSoalLengkap();
+  }
+
+  const byPaket = new Map<string, string[]>();
+  ids.forEach((id) => {
+    const raw = soalRawById.get(id);
+    const pkt = String(raw?.Paket || '');
+    if (!pkt) return;
+    const arr = byPaket.get(pkt) || [];
+    arr.push(id);
+    byPaket.set(pkt, arr);
+  });
+
+  for (const [paketNama, groupIds] of byPaket.entries()) {
+    await callGasAdmin('delSoal', { v: paketNama, ids: groupIds });
+  }
+  invalidateAdminCaches(['list_soal']);
+}
+
+// ===== Siswa CRUD =====
+
+export async function listSiswa(): Promise<Siswa[]> {
+  return withSharedCache('list_siswa', 25000, async () => {
+    const rows = await callGasAdmin<Array<Record<string, unknown>>>('list', { k: 'siswa' });
+    siswaRowById.clear();
+    siswaNameById.clear();
+    const seen = new Set<string>();
+
+    return (rows || [])
+      .map((x, idx) => {
+        const nama = String(x.Nama_Siswa || '').trim();
+        let id = slugifyName(nama || `siswa_${idx + 1}`);
+        if (seen.has(id)) id = `${id}_${x._row || idx + 1}`;
+        seen.add(id);
+
+        if (typeof x._row === 'number') siswaRowById.set(id, x._row);
+        siswaNameById.set(id, nama);
+
+        return {
+          id,
+          nama_siswa: nama,
+          nama_key: slugifyName(nama),
+          kelas: String(x.Kelas || ''),
+          status_ujian: String(x.Status_Ujian || 'Belum'),
+          status_akun: (x.Status_Akun === 'Nonaktif' ? 'Nonaktif' : 'Aktif') as
+            | 'Aktif'
+            | 'Nonaktif',
+        };
+      })
+      .sort((a, b) => a.kelas.localeCompare(b.kelas) || a.nama_siswa.localeCompare(b.nama_siswa));
+  });
+}
+
+export async function saveSiswa(siswa: {
+  id?: string;
+  nama_siswa: string;
+  kelas: string;
+  status_ujian?: string;
+  status_akun: 'Aktif' | 'Nonaktif';
+}): Promise<void> {
+  let row = siswa.id ? siswaRowById.get(siswa.id) : undefined;
+  if (siswa.id && row === undefined) {
+    await listSiswa();
+    row = siswaRowById.get(siswa.id);
+  }
+  const o: Record<string, unknown> = {
+    Nama_Siswa: siswa.nama_siswa.trim(),
+    Kelas: siswa.kelas.trim(),
+    Status_Akun: siswa.status_akun === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+  };
+  if (siswa.status_ujian !== undefined) {
+    o.Status_Ujian = siswa.status_ujian;
+  } else if (!row) {
+    o.Status_Ujian = 'Belum';
+  }
+  await callGasAdmin('save', row ? { k: 'siswa', row, o } : { k: 'siswa', o });
+  invalidateAdminCaches(['list_siswa']);
+}
+
+export async function importSiswaBatch(
+  rows: { nama_siswa: string; kelas: string; status_akun?: string }[],
+  existingSiswa: Siswa[]
+): Promise<{ added: number; skipped: number }> {
+  const have = new Set(existingSiswa.map((s) => s.nama_key));
+  const toAdd: Array<{ Nama_Siswa: string; Kelas: string; Status_Akun: string }> = [];
+
+  rows.forEach((r) => {
+    const nama = String(r.nama_siswa || '').trim();
+    const key = slugifyName(nama);
+    if (!nama || have.has(key)) return;
+    have.add(key);
+    toAdd.push({
+      Nama_Siswa: nama,
+      Kelas: String(r.kelas || '-').trim() || '-',
+      Status_Akun: r.status_akun === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+    });
+  });
+
+  const chunkSize = 100;
+  for (let i = 0; i < toAdd.length; i += chunkSize) {
+    await callGasAdmin('import', { list: toAdd.slice(i, i + chunkSize) });
+  }
+  if (toAdd.length > 0) invalidateAdminCaches(['list_siswa']);
+
+  return { added: toAdd.length, skipped: rows.length - toAdd.length };
+}
+
+export async function deleteSiswa(id: string): Promise<void> {
+  let row = siswaRowById.get(id);
+  if (row === undefined) {
+    await listSiswa();
+    row = siswaRowById.get(id);
+  }
+  if (row === undefined) {
+    throw new Error('Data siswa tidak ditemukan di Spreadsheet.');
+  }
+  await callGasAdmin('del', { k: 'siswa', row });
+  invalidateAdminCaches(['list_siswa']);
+}
+
+// ===== Hasil & Pelanggaran =====
+
+export async function listHasil(paketId?: string): Promise<HasilUjian[]> {
+  if (paketNameById.size === 0) {
+    await listPaket();
+  }
+  const nameToPaketId = new Map<string, string>();
+  paketNameById.forEach((nama, id) => {
+    nameToPaketId.set(nama.trim().toLowerCase(), id);
+  });
+
+  const mapped = await withSharedCache('list_hasil', 20000, async () => {
+    const rows = await callGasAdmin<Array<Record<string, unknown>>>('list', { k: 'hasil' });
+    const deduped = new Map<string, HasilUjian>();
+    (rows || []).forEach((x, idx) => {
+      const paketNama = String(x.Paket || '').trim();
+      const resolvedPaketId =
+        nameToPaketId.get(paketNama.toLowerCase()) || makePaketId(paketNama || 'umum');
+      const namaSiswa = String(x.Nama_Siswa || '').trim();
+      const siswaId = slugifyName(namaSiswa);
+      const key = `${siswaId}|${paketNama.toLowerCase()}`;
+      deduped.set(key, {
+        id: String(x._row || `hasil_${idx + 1}`),
+        paket_id: resolvedPaketId,
+        paket: paketNama,
+        siswa_id: siswaId,
+        nama_siswa: namaSiswa,
+        kelas: String(x.Kelas || ''),
+        nilai_akhir: Number(x.Nilai_Akhir) || 0,
+        total_benar: Number(x.Total_Benar) || 0,
+        total_salah: Number(x.Total_Salah) || 0,
+        pelanggaran_tab: Number(x.Pelanggaran_Tab) || 0,
+        detail_jawaban: parseDetailJawaban(x.Detail_Jawaban_JSON),
+        status_penilaian: 'dinilai',
+        created_at: parseLegacyDateOrNull(x.Timestamp),
+      });
+    });
+
+    return Array.from(deduped.values()).reverse();
+  });
+
+  return paketId ? mapped.filter((h) => h.paket_id === paketId) : mapped;
+}
+
+export async function listPelanggaran(): Promise<LogPelanggaran[]> {
+  if (paketNameById.size === 0) {
+    await listPaket();
+  }
+  const nameToPaketId = new Map<string, string>();
+  paketNameById.forEach((nama, id) => {
+    nameToPaketId.set(nama.trim().toLowerCase(), id);
+  });
+
+  const rows = await callGasAdmin<Array<Record<string, unknown>>>('list', { k: 'log' });
+  logMetaById.clear();
+
+  return (rows || [])
+    .map((x, idx) => {
+      const rowNum = Number(x._row) || idx + 2;
+      const id = `log_${rowNum}`;
+      const nama = String(x.Nama_Siswa || '').trim();
+      const statusUjian = String(x.Status_Ujian || '').trim();
+      const paketNama = statusUjian.toLowerCase().startsWith('sedang ujian:')
+        ? statusUjian.slice('sedang ujian:'.length).trim()
+        : statusUjian || '-';
+      const resolvedPaketId =
+        paketNama && paketNama !== '-'
+          ? nameToPaketId.get(paketNama.toLowerCase()) || makePaketId(paketNama)
+          : '';
+
+      logMetaById.set(id, { row: rowNum, nama, raw: x });
+
+      return {
+        id,
+        siswa_id: slugifyName(nama),
+        nama_siswa: nama,
+        kelas: String(x.Kelas || '-'),
+        paket_id: resolvedPaketId,
+        paket_nama: paketNama,
+        jenis_pelanggaran: String(x.Jenis_Pelanggaran || 'Pelanggaran Ujian'),
+        status_ujian: statusUjian,
+        created_at: parseLegacyDateOrNull(x.Timestamp || x.Waktu_Kejadian),
+      };
+    })
+    .sort((a, b) => (b.created_at?.getTime() || 0) - (a.created_at?.getTime() || 0));
+}
+
+export async function deletePelanggaranByIds(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const missing = ids.some((id) => !logMetaById.has(id));
+  if (missing) {
+    await listPelanggaran();
+  }
+  const rows = ids
+    .map((id) => logMetaById.get(id))
+    .filter((m): m is NonNullable<typeof m> => Boolean(m))
+    .map((m) => ({ row: m.row, nama: m.nama }));
+
+  if (rows.length > 0) {
+    await callGasAdmin('delLog', { rows });
+  }
+}
+
+export async function updatePelanggaran(
+  logId: string,
+  payload: {
+    nama_siswa: string;
+    kelas: string;
+    paket_id: string;
+    paket_nama: string;
+    jenis_pelanggaran: string;
+    status_ujian: string;
+  }
+): Promise<void> {
+  const nama = payload.nama_siswa.trim();
+  if (!nama) throw new Error('Nama siswa wajib diisi.');
+  let meta = logMetaById.get(logId);
+  if (!meta) {
+    await listPelanggaran();
+    meta = logMetaById.get(logId);
+  }
+  if (!meta) throw new Error('Data log pelanggaran tidak ditemukan.');
+
+  const statusText =
+    payload.status_ujian.trim() ||
+    (payload.paket_nama && payload.paket_nama !== '-'
+      ? `Sedang Ujian: ${payload.paket_nama}`
+      : '');
+
+  const fallbackNow = new Date().toLocaleString('id-ID');
+  const preservedTimestamp = String(meta.raw.Timestamp || fallbackNow);
+  const preservedWaktu = String(meta.raw.Waktu_Kejadian || meta.raw.Timestamp || fallbackNow);
+
+  await callGasAdmin('save', {
+    k: 'log',
+    row: meta.row,
+    o: {
+      Timestamp: preservedTimestamp,
+      Nama_Siswa: nama.slice(0, 120),
+      Kelas: (payload.kelas.trim() || '-').slice(0, 40),
+      Jenis_Pelanggaran: (payload.jenis_pelanggaran.trim() || 'Pelanggaran Ujian').slice(0, 160),
+      Waktu_Kejadian: preservedWaktu,
+      Status_Ujian: statusText.slice(0, 200),
+    },
+  });
+}
+
+export async function resetPelanggaran(params: {
+  siswaId?: string;
+  namaSiswa?: string;
+  paketId?: string;
+  paketNama?: string;
+}): Promise<{ deletedLogs: number; resetHasil: number }> {
+  const { siswaId, namaSiswa, paketId, paketNama } = params;
+  const normNama = namaSiswa ? namaSiswa.trim().toLowerCase() : '';
+  const targetSlug = siswaId || (namaSiswa ? slugifyName(namaSiswa) : '');
+  const hasPaketFilter = Boolean(paketId && paketId !== '__ALL__');
+  const normPaketNama = paketNama ? paketNama.trim().toLowerCase() : '';
+
+  const allLogs = await listPelanggaran();
+  const toDelete = allLogs.filter((l) => {
+    const matchStudent =
+      (!targetSlug && !normNama) ||
+      (targetSlug !== '' && l.siswa_id === targetSlug) ||
+      (normNama !== '' && l.nama_siswa.trim().toLowerCase() === normNama);
+
+    const matchPaket =
+      !hasPaketFilter ||
+      l.paket_id === paketId ||
+      (normPaketNama !== '' &&
+        (l.paket_nama.trim().toLowerCase() === normPaketNama ||
+          l.status_ujian.toLowerCase().includes(normPaketNama)));
+
+    return matchStudent && matchPaket;
+  });
+
+  if (toDelete.length > 0) {
+    await deletePelanggaranByIds(toDelete.map((l) => l.id));
+  }
+
+  return { deletedLogs: toDelete.length, resetHasil: 0 };
+}
+
+export async function importPelanggaranBatch(
+  rawRows: Record<string, unknown>[],
+  _paketsInput?: PaketUjian[]
+): Promise<{ added: number; skipped: number }> {
+  const existing = await listPelanggaran();
+  const existingSig = new Set(
+    existing.map(
+      (l) =>
+        `${l.siswa_id}|${l.jenis_pelanggaran.toLowerCase()}|${l.status_ujian.toLowerCase()}|${
+          l.created_at ? Math.floor(l.created_at.getTime() / 1000) : 0
+        }`
+    )
+  );
+
+  let added = 0;
+  let skipped = 0;
+
+  for (const row of rawRows || []) {
+    const nama = String(
+      getRowField(row, ['Nama_Siswa', 'Nama Siswa', 'nama_siswa', 'Nama'])
+    ).trim();
+    if (!nama) {
+      skipped++;
+      continue;
+    }
+    const kelas = String(getRowField(row, ['Kelas', 'kelas'])).trim() || '-';
+    const jenis =
+      String(
+        getRowField(row, ['Jenis_Pelanggaran', 'Jenis Pelanggaran', 'jenis_pelanggaran', 'Jenis'])
+      ).trim() || 'Pelanggaran Ujian';
+    const rawPaket = String(
+      getRowField(row, ['Paket', 'Paket_Nama', 'paket_nama', 'paket'])
+    ).trim();
+    const statusUjian =
+      String(getRowField(row, ['Status_Ujian', 'Status Ujian', 'status_ujian'])).trim() ||
+      (rawPaket ? `Sedang Ujian: ${rawPaket}` : '');
+    const rawTime = getRowField(row, ['Waktu', 'Timestamp', 'Waktu_Kejadian', 'created_at']);
+    const dt = parseLegacyDateOrNull(rawTime) || new Date();
+
+    const sig = `${slugifyName(nama)}|${jenis.toLowerCase()}|${statusUjian.toLowerCase()}|${Math.floor(
+      dt.getTime() / 1000
+    )}`;
+    if (existingSig.has(sig)) {
+      skipped++;
+      continue;
+    }
+    existingSig.add(sig);
+
+    const formattedTs = dt.toLocaleString('id-ID');
+    await callGasAdmin('save', {
+      k: 'log',
+      o: {
+        Timestamp: formattedTs,
+        Nama_Siswa: nama,
+        Kelas: kelas,
+        Jenis_Pelanggaran: jenis,
+        Waktu_Kejadian: formattedTs,
+        Status_Ujian: statusUjian,
+      },
+    });
+    added++;
+  }
+
+  return { added, skipped };
+}
+
+// ===== Reset, Force Finish, Rescore & Monitor Polling =====
+
+export async function resetPesertaUjian(
+  paket: PaketUjian,
+  targetSiswaIds?: string[]
+): Promise<number> {
+  if (!targetSiswaIds || targetSiswaIds.length === 0) {
+    const allSiswa = await listSiswa();
+    await callGasAdmin('reset', { type: 'paket', v: paket.nama_paket_soal });
+    invalidateAdminCaches(['list_siswa', 'list_hasil', `pantau_${paket.id}`]);
+    return allSiswa.length;
+  }
+
+  const missing = targetSiswaIds.some((id) => !siswaNameById.has(id));
+  if (missing) {
+    await listSiswa();
+  }
+  const names = targetSiswaIds
+    .map((id) => siswaNameById.get(id))
+    .filter((n): n is string => Boolean(n));
+
+  if (names.length === 0) return 0;
+  await callGasAdmin('reset', {
+    type: 'pilih',
+    v: paket.nama_paket_soal,
+    names,
+  });
+  invalidateAdminCaches(['list_siswa', 'list_hasil', `pantau_${paket.id}`]);
+  return names.length;
+}
+
+export async function forceFinishSiswa(
+  paket: PaketUjian,
+  siswa: Siswa,
+  _progres?: ProgresUjian,
+  _questions?: SoalLengkap[]
+): Promise<void> {
+  await callGasAdmin('finish', {
+    nama: siswa.nama_siswa,
+    v: paket.nama_paket_soal,
+  });
+  invalidateAdminCaches(['list_siswa', 'list_hasil', `pantau_${paket.id}`]);
+}
+
+export async function rescoreHasil(
+  paket: PaketUjian,
+  _questions: SoalLengkap[],
+  hasilList: HasilUjian[]
+): Promise<number> {
+  if (hasilList.length === 1) {
+    await callGasAdmin('rescore', {
+      v: paket.nama_paket_soal,
+      nama: hasilList[0].nama_siswa,
+    });
+    invalidateAdminCaches(['list_hasil']);
+    return 1;
+  }
+  await callGasAdmin('rescore', { v: paket.nama_paket_soal });
+  invalidateAdminCaches(['list_hasil']);
+  return hasilList.length;
+}
+
+interface GasPantauRow {
+  Nama_Siswa?: string;
+  Kelas?: string;
+  Status?: string;
+  Dijawab?: number;
+  Terakhir_Aktif?: string;
+  Skor_Benar?: number;
+  Skor_Salah?: number;
+  Nilai?: number;
+  Waktu_Selesai?: string;
+  Sisa_Detik?: number;
+  Online?: boolean;
+}
+
+interface GasPantauResponse {
+  paket?: string;
+  total_soal?: number;
+  rows?: GasPantauRow[];
+}
+
+export function subscribeMonitorPaket(
+  paketId: string,
+  callbacks: {
+    onProgres: (list: ProgresUjian[]) => void;
+    onHasil: (list: HasilUjian[]) => void;
+    onSiswa: (list: Siswa[]) => void;
+  }
+): () => void {
+  let stopped = false;
+  let polling = false;
+  let pollCount = 0;
+  let cachedHasil: HasilUjian[] = [];
+  let cachedSiswa: Siswa[] = [];
+  let timerId: number | null = null;
+
+  const buildProgresFromPantau = (
+    paketNama: string,
+    rows: GasPantauRow[]
+  ): ProgresUjian[] =>
+    rows
+      .filter((r) => r.Status === 'Sedang Mengerjakan' && r.Nama_Siswa)
+      .map((r) => {
+        const nama = String(r.Nama_Siswa || '');
+        const siswaId = slugifyName(nama);
+        return {
+          id: `${paketId}__${siswaId}`,
+          paket_id: paketId,
+          paket_nama: paketNama,
+          siswa_id: siswaId,
+          nama_siswa: nama,
+          kelas: String(r.Kelas || '-'),
+          jawaban: {},
+          ragu: {},
+          current_index: 0,
+          sisa_detik: Number(r.Sisa_Detik) || 0,
+          pelanggaran: 0,
+          updated_at: parseLegacyDateOrNull(r.Terakhir_Aktif),
+          precomputed: {
+            dijawab: Number(r.Dijawab) || 0,
+            benar: Number(r.Skor_Benar) || 0,
+            salah: Number(r.Skor_Salah) || 0,
+            nilai: Number(r.Nilai) || 0,
+            online: Boolean(r.Online),
+            lastActiveLabel: r.Terakhir_Aktif ? String(r.Terakhir_Aktif) : '-',
+          },
+        };
+      });
+
+  const poll = async (forceInitial = false) => {
+    if (stopped || polling) return;
+    if (!forceInitial && document.hidden) return;
+    polling = true;
+
+    try {
+      if (paketNameById.size === 0) {
+        await listPaket();
+      }
+      const paketNama = paketNameById.get(paketId);
+
+      // Initial mount or every 3rd poll (~60s): use shared-cached listHasil & listSiswa;
+      // intermediate polls ONLY fetch lightweight `pantau` to avoid 3x full-sheet reads per admin.
+      if (forceInitial || pollCount === 0) {
+        const [hasilAll, siswaAll, pantauRes] = await Promise.all([
+          listHasil(),
+          listSiswa(),
+          paketNama
+            ? withSharedCache(`pantau_${paketId}`, 12000, () =>
+                callGasAdmin<GasPantauResponse>('pantau', { v: paketNama })
+              )
+            : Promise.resolve({ rows: [] } as GasPantauResponse),
+        ]);
+        if (stopped) return;
+        cachedHasil = hasilAll;
+        cachedSiswa = siswaAll;
+        callbacks.onHasil(cachedHasil.filter((h) => h.paket_id === paketId));
+        callbacks.onSiswa(cachedSiswa);
+        callbacks.onProgres(buildProgresFromPantau(paketNama || '', pantauRes?.rows || []));
+      } else {
+        const pantauRes = paketNama
+          ? await withSharedCache(`pantau_${paketId}`, 12000, () =>
+              callGasAdmin<GasPantauResponse>('pantau', { v: paketNama })
+            )
+          : ({ rows: [] } as GasPantauResponse);
+        if (stopped) return;
+
+        const rows = pantauRes?.rows || [];
+        const knownHasilIds = new Set(
+          cachedHasil.filter((h) => h.paket_id === paketId).map((h) => h.siswa_id)
+        );
+        const hasNewFinished = rows.some(
+          (r) => r.Status === 'Selesai' && r.Nama_Siswa && !knownHasilIds.has(slugifyName(r.Nama_Siswa))
+        );
+        const knownSiswaIds = new Set(cachedSiswa.map((s) => s.id));
+        const hasNewSiswa = rows.some(
+          (r) => r.Nama_Siswa && !knownSiswaIds.has(slugifyName(r.Nama_Siswa))
+        );
+
+        if (hasNewFinished) {
+          invalidateAdminCaches(['list_hasil']);
+          cachedHasil = await listHasil();
+          if (stopped) return;
+        } else if (pollCount % 3 === 0 || hasNewSiswa) {
+          invalidateAdminCaches(['list_siswa']);
+          cachedSiswa = await listSiswa();
+          if (stopped) return;
+        }
+
+        // Reflect active status from `pantau` on cachedSiswa without re-reading full Siswa sheet
+        const pantauStatusById = new Map<string, string>();
+        rows.forEach((r) => {
+          if (r.Nama_Siswa && r.Status === 'Sedang Mengerjakan' && paketNama) {
+            pantauStatusById.set(slugifyName(r.Nama_Siswa), `Sedang Ujian: ${paketNama}`);
+          }
+        });
+        const mergedSiswa = cachedSiswa.map((s) => {
+          const liveSt = pantauStatusById.get(s.id);
+          return liveSt && s.status_ujian !== liveSt ? { ...s, status_ujian: liveSt } : s;
+        });
+
+        callbacks.onHasil(cachedHasil.filter((h) => h.paket_id === paketId));
+        callbacks.onSiswa(mergedSiswa);
+        callbacks.onProgres(buildProgresFromPantau(paketNama || '', rows));
+      }
+
+      pollCount++;
+    } catch (err) {
+      console.warn('Gagal polling monitor ujian:', err);
+    } finally {
+      polling = false;
+    }
+  };
+
+  const scheduleNext = () => {
+    if (stopped) return;
+    // 20s + 0-3s random jitter so 3 concurrent admins don't poll at the exact same instant
+    const delayMs = 20000 + Math.floor(Math.random() * 3000);
+    timerId = window.setTimeout(() => {
+      void poll(false).finally(scheduleNext);
+    }, delayMs);
+  };
+
+  const onVisChange = () => {
+    if (!document.hidden && !stopped) {
+      void poll(false);
+    }
+  };
+  document.addEventListener('visibilitychange', onVisChange);
+
+  void poll(true).finally(scheduleNext);
+
+  return () => {
+    stopped = true;
+    if (timerId !== null) window.clearTimeout(timerId);
+    document.removeEventListener('visibilitychange', onVisChange);
+  };
+}
+
+export function subscribeMonitorAll(callbacks: {
+  onProgres: (list: ProgresUjian[]) => void;
+  onHasil: (list: HasilUjian[]) => void;
+  onSiswa: (list: Siswa[]) => void;
+}): () => void {
+  let stopped = false;
+
+  const poll = async () => {
+    try {
+      const [hasilAll, siswaAll] = await Promise.all([listHasil(), listSiswa()]);
+      if (stopped) return;
+      callbacks.onHasil(hasilAll);
+      callbacks.onSiswa(siswaAll);
+      callbacks.onProgres([]);
+    } catch (err) {
+      console.warn('Gagal polling monitor:', err);
+    }
+  };
+
+  void poll();
+  const intervalId = window.setInterval(() => {
+    void poll();
+  }, 15000);
+
+  return () => {
+    stopped = true;
+    window.clearInterval(intervalId);
+  };
+}
+
+// ===== Seed Sample Data =====
+
+export async function seedSampleDatabase(): Promise<void> {
+  await savePengaturan(DEFAULT_PENGATURAN);
+  await saveTataTertibList(
+    DEFAULT_TATA_TERTIB.map((teks, idx) => ({ no: idx + 1, teks }))
+  );
+
+  const samplePakets: Array<Omit<PaketUjian, 'id'>> = [
+    {
+      nama_paket_soal: 'Matematika Kelas 6',
+      mata_pelajaran: 'Matematika',
+      durasi_menit: 60,
+      status: 'Aktif',
+      token_paket_soal: 'MTK123',
+      waktu_mulai: '2026-01-01 00:00:00',
+      waktu_berakhir: '2030-12-31 23:59:00',
+      tampilkan_nilai: true,
+      acak_soal: false,
+    },
+    {
+      nama_paket_soal: 'IPA Kelas 6',
+      mata_pelajaran: 'IPA',
+      durasi_menit: 45,
+      status: 'Aktif',
+      token_paket_soal: 'IPA123',
+      waktu_mulai: '2026-01-01 00:00:00',
+      waktu_berakhir: '2030-12-31 23:59:00',
+      tampilkan_nilai: true,
+      acak_soal: false,
+    },
+    {
+      nama_paket_soal: 'Bahasa Indonesia Kelas 6',
+      mata_pelajaran: 'Bahasa Indonesia',
+      durasi_menit: 60,
+      status: 'Nonaktif',
+      token_paket_soal: 'BIN123',
+      waktu_mulai: '2026-01-01 00:00:00',
+      waktu_berakhir: '2030-12-31 23:59:00',
+      tampilkan_nilai: true,
+      acak_soal: false,
+    },
+  ];
+
+  const mtkId = await savePaket(samplePakets[0]);
+  await savePaket(samplePakets[1]);
+  await savePaket(samplePakets[2]);
+
+  const mtkPaket: PaketUjian = { id: mtkId, ...samplePakets[0] };
+  await importSoalBatch(
+    [
+      {
+        id_soal: `S${Date.now()}_1`,
+        nomor_soal: 1,
+        jenis_soal: 'PG',
+        teks_stimulus:
+          'Bu Ani membeli 3 kg apel seharga Rp25.000 per kg dan 2 kg jeruk seharga Rp20.000 per kg di pasar.',
+        gambar_stimulus_url: '',
+        teks_soal: 'Berapa total uang yang harus dibayar Bu Ani?',
+        gambar_soal_url: '',
+        pilihan_a: 'Rp95.000',
+        pilihan_b: 'Rp105.000',
+        pilihan_c: 'Rp115.000',
+        pilihan_d: 'Rp125.000',
+        kunci_jawaban: 'C',
+        pembahasan: 'Apel: 3 x 25.000 = 75.000. Jeruk: 2 x 20.000 = 40.000. Total = 115.000.',
+        bobot: 10,
+      },
+      {
+        id_soal: `S${Date.now()}_2`,
+        nomor_soal: 2,
+        jenis_soal: 'PGK MCMA',
+        teks_stimulus: 'Perhatikan deretan bilangan berikut: **12, 15, 18, 21, 25**.',
+        gambar_stimulus_url: '',
+        teks_soal: 'Pilih SEMUA bilangan yang merupakan kelipatan 3.',
+        gambar_soal_url: '',
+        pilihan_a: '12',
+        pilihan_b: '15',
+        pilihan_c: '21',
+        pilihan_d: '25',
+        kunci_jawaban: 'A,B,C',
+        pembahasan: '12, 15, dan 21 habis dibagi 3, sedangkan 25 tidak.',
+        bobot: 10,
+      },
+      {
+        id_soal: `S${Date.now()}_3`,
+        nomor_soal: 3,
+        jenis_soal: 'PGK Kategori:Benar/Salah',
+        teks_stimulus:
+          'Kebun Pak Budi berbentuk persegi panjang dengan panjang 20 m dan lebar 15 m.',
+        gambar_stimulus_url: '',
+        teks_soal: 'Tentukan pernyataan berikut Benar atau Salah.',
+        gambar_soal_url: '',
+        pilihan_a: 'Luas kebun adalah 300 m^{2}',
+        pilihan_b: 'Keliling kebun adalah 70 m',
+        pilihan_c: 'Luas kebun adalah 350 m^{2}',
+        pilihan_d: 'Lebar kebun lebih panjang daripada panjangnya',
+        kunci_jawaban: 'Benar,Benar,Salah,Salah',
+        pembahasan:
+          'Luas = 20 x 15 = 300 m^{2}. Keliling = 2 x (20+15) = 70 m. Lebar (15) lebih pendek dari panjang (20).',
+        bobot: 10,
+      },
+    ],
+    mtkPaket
+  );
+
+  const existingSiswa = await listSiswa();
+  await importSiswaBatch(
+    [
+      { nama_siswa: 'Andi Saputra', kelas: '6A', status_akun: 'Aktif' },
+      { nama_siswa: 'Siti Rahma', kelas: '6A', status_akun: 'Aktif' },
+      { nama_siswa: 'Budi Santoso', kelas: '6B', status_akun: 'Aktif' },
+    ],
+    existingSiswa
+  );
 }

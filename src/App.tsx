@@ -4,9 +4,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { CheckCircle2, AlertCircle } from 'lucide-react';
-import { onAuthStateChanged } from 'firebase/auth';
-import { auth, testConnection } from './firebase';
+import { CheckCircle2, AlertCircle, BookOpenCheck } from 'lucide-react';
 import {
   checkIsCurrentAdminSession,
   DEFAULT_PENGATURAN,
@@ -36,30 +34,19 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
     void (async () => {
-      await testConnection();
-      const cfg = await getPengaturan();
-      if (mounted) {
-        setSettings(cfg);
-        document.title = cfg.judul || DEFAULT_PENGATURAN.judul;
-      }
-    })();
-
-    const unsub = onAuthStateChanged(auth, async (user) => {
+      const [cfg, isAdm] = await Promise.all([
+        getPengaturan(),
+        checkIsCurrentAdminSession(),
+      ]);
       if (!mounted) return;
-      if (user) {
-        const isAdm = await checkIsCurrentAdminSession(user);
-        if (mounted) {
-          setAdminActive(isAdm);
-        }
-      } else {
-        setAdminActive(false);
-      }
-      if (mounted) setBooting(false);
-    });
+      setSettings(cfg);
+      document.title = cfg.judul || DEFAULT_PENGATURAN.judul;
+      setAdminActive(isAdm);
+      setBooting(false);
+    })();
 
     return () => {
       mounted = false;
-      unsub();
     };
   }, []);
 
@@ -73,21 +60,24 @@ export default function App() {
       {toast && (
         <div
           className={`fixed top-4 left-1/2 -translate-x-1/2 z-[100] px-4 py-2.5 rounded-xl shadow-md text-white text-xs font-semibold flex items-center gap-2 max-w-[92vw] transition-all ${
-            toast.type === 'ok' ? 'bg-emerald-600' : 'bg-rose-600'
+            toast.type === 'ok' ? 'bg-sky-500' : 'bg-rose-600'
           }`}
         >
           {toast.type === 'ok' ? (
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <CheckCircle2 className="w-4 h-4 shrink-0" strokeWidth={2} />
           ) : (
-            <AlertCircle className="w-4 h-4 shrink-0" />
+            <AlertCircle className="w-4 h-4 shrink-0" strokeWidth={2} />
           )}
           <span>{toast.msg}</span>
         </div>
       )}
 
       {booting ? (
-        <div className="min-h-screen bg-[#f4f6f9] flex items-center justify-center p-6 text-sm text-slate-500">
-          Menghubungkan ke server CBT Firebase...
+        <div className="min-h-screen bg-[#F0F7FF] flex flex-col items-center justify-center p-6 gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-sky-50 border border-sky-200/80 text-sky-500 flex items-center justify-center">
+            <BookOpenCheck className="w-6 h-6" strokeWidth={1.75} />
+          </div>
+          <p className="text-sm font-medium text-slate-600">Menyiapkan portal ujian...</p>
         </div>
       ) : adminActive ? (
         <AdminDashboard

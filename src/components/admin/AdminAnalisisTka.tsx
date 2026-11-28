@@ -196,7 +196,7 @@ export function AdminAnalisisTka({ settings, pakets, soals, hasils, onRefresh, o
         .filter((x): x is NonNullable<typeof x> => x !== null);
       const count = await updateSoalTkaBatch(updates);
       await onRefresh();
-      onToast(`${count} pemetaan TKA soal berhasil disimpan ke Firestore.`, 'ok');
+      onToast(`${count} pemetaan TKA soal berhasil disimpan.`, 'ok');
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'Gagal menyimpan pemetaan TKA.', 'err');
     } finally {
@@ -472,7 +472,7 @@ export function AdminAnalisisTka({ settings, pakets, soals, hasils, onRefresh, o
             type="button"
             onClick={handleRunAutoAnalyzeAll}
             disabled={paketSoals.length === 0}
-            className="min-h-[42px] sm:min-h-[38px] px-3 py-2 rounded-xl border border-slate-200/90 bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+            className="min-h-[42px] sm:min-h-[38px] px-3 py-2 rounded-xl border border-sky-200/80 bg-white hover:bg-[#F2F8FF] disabled:opacity-50 text-slate-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
           >
             <Sparkles className="w-4 h-4 text-sky-600" />
             Analisis Ulang
@@ -482,7 +482,7 @@ export function AdminAnalisisTka({ settings, pakets, soals, hasils, onRefresh, o
             type="button"
             onClick={() => void handleSaveMappings()}
             disabled={saving || paketSoals.length === 0 || !hasUnsavedChanges}
-            className="min-h-[42px] sm:min-h-[38px] px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+            className="min-h-[42px] sm:min-h-[38px] px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
           >
             <Save className="w-4 h-4" />
             {saving ? 'Menyimpan...' : 'Simpan Pemetaan'}
@@ -552,7 +552,7 @@ export function AdminAnalisisTka({ settings, pakets, soals, hasils, onRefresh, o
             type="button"
             disabled={saving}
             onClick={() => void handleSaveMappings()}
-            className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold cursor-pointer"
+            className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-semibold cursor-pointer"
           >
             Simpan Sekarang
           </button>
@@ -570,14 +570,14 @@ export function AdminAnalisisTka({ settings, pakets, soals, hasils, onRefresh, o
                 val: paketSoals.length,
                 sub: activePaket?.nama_paket_soal || '-',
                 icon: FileText,
-                iconBg: 'bg-sky-50 text-sky-600 border-sky-200/60',
+                iconBg: 'bg-sky-50 text-sky-600 border-sky-200/80',
               },
               {
                 label: 'Keterpenuhan Subkompetensi',
                 val: `${coveredIndikator} / ${totalIndikator}`,
                 sub: 'Indikator terwakili soal',
                 icon: CheckCircle2,
-                iconBg: 'bg-indigo-50 text-indigo-600 border-indigo-200/60',
+                iconBg: 'bg-slate-100 text-slate-700 border-slate-200/80',
               },
               {
                 label: 'Peserta Dianalisis',
@@ -651,7 +651,7 @@ export function AdminAnalisisTka({ settings, pakets, soals, hasils, onRefresh, o
                       <div className="flex items-center gap-2.5 pt-1">
                         <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
                           <div
-                            className="h-full bg-blue-600 rounded-full"
+                            className="h-full bg-sky-500 rounded-full"
                             style={{ width: `${Math.min(100, row.pct)}%` }}
                           />
                         </div>
@@ -700,7 +700,7 @@ export function AdminAnalisisTka({ settings, pakets, soals, hasils, onRefresh, o
                             <div className="flex items-center gap-2.5">
                               <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
                                 <div
-                                  className="h-full bg-blue-600 rounded-full"
+                                  className="h-full bg-sky-500 rounded-full"
                                   style={{ width: `${Math.min(100, row.pct)}%` }}
                                 />
                               </div>
@@ -844,7 +844,7 @@ export function AdminAnalisisTka({ settings, pakets, soals, hasils, onRefresh, o
                     <span className="font-mono tabular-nums text-xs font-bold text-slate-900">
                       Soal No. {q.nomor_soal} · {q.jenis_soal}
                     </span>
-                    <span className="font-mono tabular-nums text-xs font-semibold text-blue-600">
+                    <span className="font-mono tabular-nums text-xs font-semibold text-sky-600">
                       {m?.pct === null || m?.pct === undefined ? '-' : `${m.pct}% Benar`}
                     </span>
                   </div>
